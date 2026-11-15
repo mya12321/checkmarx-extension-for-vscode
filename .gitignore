@@ -1,0 +1,12 @@
+node_modules/
+dist/
+out/
+*.vsix
+.research/
+.npm-cache/
+.vscode-test/
+coverage/
+*.log
+.DS_Store
+
+.vscode/.checkmarx*

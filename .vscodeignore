@@ -1,0 +1,13 @@
+.vscode/**
+.research/**
+.npm-cache/**
+src/**
+node_modules/**
+out/**
+coverage/**
+**/*.map
+**/*.ts
+.gitignore
+esbuild.mjs
+tsconfig.json
+*.vsix

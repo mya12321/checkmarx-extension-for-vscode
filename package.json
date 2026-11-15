@@ -1,0 +1,639 @@
+{
+  "name": "checkmarx-local",
+  "displayName": "Checkmarx Local Scan & MCP",
+  "description": "Run Checkmarx CLI scans from VS Code with an API key, including local ASCA scans, real-time scanning, an Activity Bar dashboard, and an MCP server so AI agents can read results and fix code.",
+  "version": "0.1.3",
+  "publisher": "checkmarx-local",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mya12321/checkmarx-extension-for-vscode.git"
+  },
+  "engines": {
+    "vscode": "^1.101.0"
+  },
+  "categories": [
+    "Linters",
+    "Other",
+    "Machine Learning"
+  ],
+  "keywords": [
+    "checkmarx",
+    "security",
+    "sast",
+    "sca",
+    "mcp",
+    "ai",
+    "static analysis",
+    "dashboard"
+  ],
+  "icon": "media/icon.png",
+  "main": "./dist/extension.js",
+  "extensionKind": [
+    "workspace"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onView:checkmarxLocal.dashboard",
+    "onView:checkmarxLocal.results",
+    "onView:checkmarxLocal.scans"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "The extension executes the Checkmarx CLI against workspace files and needs workspace trust."
+    },
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "The Checkmarx CLI needs a local workspace and filesystem access."
+    }
+  },
+  "contributes": {
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "checkmarxLocal",
+        "label": "Checkmarx Local Scan"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "checkmarxLocal",
+          "title": "Checkmarx Local",
+          "icon": "media/checkmarx.svg"
+        }
+      ]
+    },
+    "views": {
+      "checkmarxLocal": [
+        {
+          "id": "checkmarxLocal.dashboard",
+          "name": "Dashboard",
+          "type": "webview",
+          "icon": "media/checkmarx.svg",
+          "contextualTitle": "Checkmarx Dashboard"
+        },
+        {
+          "id": "checkmarxLocal.results",
+          "name": "Results",
+          "icon": "media/checkmarx.svg",
+          "contextualTitle": "Checkmarx Results"
+        },
+        {
+          "id": "checkmarxLocal.scans",
+          "name": "Scans",
+          "icon": "media/history.svg",
+          "contextualTitle": "Checkmarx Scans"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "checkmarxLocal.results",
+        "contents": "No Checkmarx results yet.\n[Sign in with API key](command:checkmarxLocal.login)\n[Scan project](command:checkmarxLocal.scanProject)\n[Scan current file](command:checkmarxLocal.scanCurrentFile)\nTo enable automatic scans while editing, run [Toggle real-time scan](command:checkmarxLocal.toggleRealtime)."
+      },
+      {
+        "view": "checkmarxLocal.scans",
+        "contents": "No scans have been run in this workspace yet.\n[Scan project](command:checkmarxLocal.scanProject)\n[Scan current file](command:checkmarxLocal.scanCurrentFile)"
+      }
+    ],
+    "commands": [
+      {
+        "command": "checkmarxLocal.login",
+        "title": "Checkmarx: Sign In with API Key",
+        "icon": "$(account)"
+      },
+      {
+        "command": "checkmarxLocal.logout",
+        "title": "Checkmarx: Sign Out",
+        "icon": "$(sign-out)"
+      },
+      {
+        "command": "checkmarxLocal.scanProject",
+        "title": "Checkmarx: Scan Project",
+        "icon": "$(play)"
+      },
+      {
+        "command": "checkmarxLocal.scanProjectCloud",
+        "title": "Checkmarx: Scan Project (Checkmarx One cloud)"
+      },
+      {
+        "command": "checkmarxLocal.scanProjectLocal",
+        "title": "Checkmarx: Scan Project (local ASCA engine)"
+      },
+      {
+        "command": "checkmarxLocal.scanCurrentFile",
+        "title": "Checkmarx: Scan Current File",
+        "icon": "$(file-code)"
+      },
+      {
+        "command": "checkmarxLocal.scanFile",
+        "title": "Checkmarx: Scan File...",
+        "icon": "$(file)"
+      },
+      {
+        "command": "checkmarxLocal.openDashboard",
+        "title": "Checkmarx: Open Dashboard",
+        "icon": "$(dashboard)"
+      },
+      {
+        "command": "checkmarxLocal.setApplication",
+        "title": "Checkmarx: Set Application Name"
+      },
+      {
+        "command": "checkmarxLocal.scanCurrentFileCloud",
+        "title": "Checkmarx: Scan Current File (Cloud)"
+      },
+      {
+        "command": "checkmarxLocal.scanCurrentFileLocal",
+        "title": "Checkmarx: Scan Current File (Local ASCA)"
+      },
+      {
+        "command": "checkmarxLocal.scanFileCloud",
+        "title": "Checkmarx: Scan File... (Cloud)"
+      },
+      {
+        "command": "checkmarxLocal.scanFileLocal",
+        "title": "Checkmarx: Scan File... (Local ASCA)"
+      },
+      {
+        "command": "checkmarxLocal.toggleRealtime",
+        "title": "Checkmarx: Toggle Real-time Scan",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "checkmarxLocal.cancelScan",
+        "title": "Checkmarx: Cancel Scan",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "checkmarxLocal.clearResults",
+        "title": "Checkmarx: Clear Results",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "checkmarxLocal.refreshResults",
+        "title": "Checkmarx: Refresh Results",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "checkmarxLocal.showResults",
+        "title": "Checkmarx: Show Results"
+      },
+      {
+        "command": "checkmarxLocal.openFinding",
+        "title": "Checkmarx: Open Finding"
+      },
+      {
+        "command": "checkmarxLocal.showFindingDetails",
+        "title": "Checkmarx: Show Finding Details",
+        "icon": "$(preview)"
+      },
+      {
+        "command": "checkmarxLocal.fixFindingWithAi",
+        "title": "Checkmarx: Fix Finding with AI",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "checkmarxLocal.fixFileWithAi",
+        "title": "Checkmarx: Fix File Findings with AI",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "checkmarxLocal.copyFixPrompt",
+        "title": "Checkmarx: Copy AI Fix Prompt",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "checkmarxLocal.showScanSummary",
+        "title": "Checkmarx: Show Scan Summary",
+        "icon": "$(graph)"
+      },
+      {
+        "command": "checkmarxLocal.exportResults",
+        "title": "Checkmarx: Export Results...",
+        "icon": "$(export)"
+      },
+      {
+        "command": "checkmarxLocal.installCli",
+        "title": "Checkmarx: Install / Update CLI"
+      },
+      {
+        "command": "checkmarxLocal.selectCli",
+        "title": "Checkmarx: Select CLI Path..."
+      },
+      {
+        "command": "checkmarxLocal.showOutput",
+        "title": "Checkmarx: Show Output",
+        "icon": "$(output)"
+      },
+      {
+        "command": "checkmarxLocal.openSettings",
+        "title": "Checkmarx: Open Settings"
+      },
+      {
+        "command": "checkmarxLocal.checkHealth",
+        "title": "Checkmarx: Run Diagnostics"
+      },
+      {
+        "command": "checkmarxLocal.showMcpInfo",
+        "title": "Checkmarx: Show MCP Server Info"
+      },
+      {
+        "command": "checkmarxLocal.restartMcp",
+        "title": "Checkmarx: Restart MCP Server"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "checkmarxLocal.openFinding",
+          "when": "false"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "checkmarxLocal.scanProject",
+          "when": "view == checkmarxLocal.results",
+          "group": "navigation@1"
+        },
+        {
+          "command": "checkmarxLocal.scanCurrentFile",
+          "when": "view == checkmarxLocal.results",
+          "group": "navigation@2"
+        },
+        {
+          "command": "checkmarxLocal.toggleRealtime",
+          "when": "view == checkmarxLocal.results",
+          "group": "navigation@3"
+        },
+        {
+          "command": "checkmarxLocal.cancelScan",
+          "when": "view == checkmarxLocal.results && checkmarxLocal.scanning",
+          "group": "navigation@4"
+        },
+        {
+          "command": "checkmarxLocal.refreshResults",
+          "when": "view == checkmarxLocal.results",
+          "group": "navigation@5"
+        },
+        {
+          "command": "checkmarxLocal.clearResults",
+          "when": "view == checkmarxLocal.results",
+          "group": "navigation@6"
+        },
+        {
+          "command": "checkmarxLocal.refreshResults",
+          "when": "view == checkmarxLocal.scans",
+          "group": "navigation@1"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "checkmarxLocal.fixFindingWithAi",
+          "when": "view == checkmarxLocal.results && viewItem == checkmarxFinding",
+          "group": "inline@1"
+        },
+        {
+          "command": "checkmarxLocal.copyFixPrompt",
+          "when": "view == checkmarxLocal.results && viewItem == checkmarxFinding",
+          "group": "1_fix@1"
+        },
+        {
+          "command": "checkmarxLocal.showFindingDetails",
+          "when": "view == checkmarxLocal.results && viewItem == checkmarxFinding",
+          "group": "1_fix@2"
+        },
+        {
+          "command": "checkmarxLocal.scanFile",
+          "when": "view == checkmarxLocal.results && viewItem == checkmarxFinding",
+          "group": "2_rescan@1"
+        },
+        {
+          "command": "checkmarxLocal.fixFileWithAi",
+          "when": "view == checkmarxLocal.results && viewItem == checkmarxFileGroup",
+          "group": "inline@1"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "checkmarxLocal.scanCurrentFile",
+          "when": "resourceScheme == file",
+          "group": "navigation@8"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "checkmarxLocal.scanFile",
+          "when": "resourceScheme == file",
+          "group": "checkmarx@1"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Checkmarx Local",
+      "properties": {
+        "checkmarxLocal.baseUri": {
+          "type": "string",
+          "default": "",
+          "order": 1,
+          "markdownDescription": "Checkmarx One base URI, for example `https://ast.checkmarx.net` or `https://eu.ast.checkmarx.net`. For on-premises installations use your own host."
+        },
+        "checkmarxLocal.baseAuthUri": {
+          "type": "string",
+          "default": "",
+          "order": 2,
+          "markdownDescription": "Checkmarx IAM base URI, for example `https://iam.checkmarx.net` or `https://eu.iam.checkmarx.net`. Leave empty to let the CLI derive it."
+        },
+        "checkmarxLocal.tenant": {
+          "type": "string",
+          "default": "",
+          "order": 3,
+          "markdownDescription": "Checkmarx One tenant name."
+        },
+        "checkmarxLocal.cliPath": {
+          "type": "string",
+          "default": "auto",
+          "order": 4,
+          "markdownDescription": "Path to the `cx` binary. `auto` searches `PATH`, the extension-managed installation, and the CLI bundled with the official Checkmarx extensions."
+        },
+        "checkmarxLocal.cliExtraArgs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "order": 5,
+          "markdownDescription": "Extra global arguments appended to every CLI invocation, for example `--insecure` or `--timeout 60`."
+        },
+        "checkmarxLocal.cliAutoInstall": {
+          "type": "boolean",
+          "default": true,
+          "order": 6,
+          "markdownDescription": "Automatically download the Checkmarx CLI into extension storage when it cannot be found."
+        },
+        "checkmarxLocal.project.name": {
+          "type": "string",
+          "default": "",
+          "order": 10,
+          "markdownDescription": "Checkmarx One project name. Defaults to the workspace folder name."
+        },
+        "checkmarxLocal.project.branch": {
+          "type": "string",
+          "default": "",
+          "order": 11,
+          "markdownDescription": "Branch name to scan. Defaults to the current Git branch, or `main` when Git is unavailable."
+        },
+        "checkmarxLocal.scan.projectEngine": {
+          "type": "string",
+          "enum": [
+            "cloud",
+            "local"
+          ],
+          "enumDescriptions": [
+            "Upload the project to Checkmarx One and run the full cloud scan. Requires a valid API key and scan permission.",
+            "Run the local ASCA engine file-by-file over the project. No source upload and no cloud scan permission required."
+          ],
+          "default": "cloud",
+          "order": 12,
+          "markdownDescription": "Engine used by `Checkmarx: Scan Project`. You can always run the other engine from the command palette."
+        },
+        "checkmarxLocal.scan.scanTypes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "sast",
+              "sca",
+              "iac-security",
+              "api-security",
+              "aisc"
+            ]
+          },
+          "default": [
+            "sast"
+          ],
+          "uniqueItems": true,
+          "order": 13,
+          "markdownDescription": "Cloud scan types passed to `cx scan create --scan-types`."
+        },
+        "checkmarxLocal.scan.fileEngine": {
+          "type": "string",
+          "enum": [
+            "local",
+            "cloud"
+          ],
+          "default": "local",
+          "order": 14,
+          "markdownDescription": "Engine used for single-file scans. `local` runs the ASCA engine without uploading code."
+        },
+        "checkmarxLocal.scan.fileFallbackToCloud": {
+          "type": "boolean",
+          "default": false,
+          "order": 15,
+          "markdownDescription": "If a local single-file scan fails, retry as a filtered Checkmarx One cloud scan of that file."
+        },
+        "checkmarxLocal.scan.localConcurrency": {
+          "type": "number",
+          "default": 2,
+          "minimum": 1,
+          "maximum": 4,
+          "order": 16,
+          "markdownDescription": "Number of parallel ASCA scans when scanning a whole project locally."
+        },
+        "checkmarxLocal.scan.localMaxFiles": {
+          "type": "number",
+          "default": 2000,
+          "minimum": 1,
+          "order": 17,
+          "markdownDescription": "Safety limit on the number of files scanned by a local project scan."
+        },
+        "checkmarxLocal.scan.exclude": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "**/node_modules/**",
+            "**/.git/**",
+            "**/dist/**",
+            "**/build/**",
+            "**/out/**",
+            "**/vendor/**",
+            "**/target/**",
+            "**/.venv/**",
+            "**/venv/**",
+            "**/coverage/**",
+            "**/*.min.js",
+            "**/*.map"
+          ],
+          "order": 18,
+          "markdownDescription": "Glob patterns excluded from local project scans and real-time scans."
+        },
+        "checkmarxLocal.scan.timeoutMinutes": {
+          "type": "number",
+          "default": 30,
+          "minimum": 1,
+          "order": 19,
+          "markdownDescription": "Maximum time to wait for a cloud scan to finish."
+        },
+        "checkmarxLocal.scan.pollIntervalSeconds": {
+          "type": "number",
+          "default": 5,
+          "minimum": 2,
+          "order": 20,
+          "markdownDescription": "Polling interval while waiting for a cloud scan."
+        },
+        "checkmarxLocal.scan.showCliOutput": {
+          "type": "boolean",
+          "default": false,
+          "order": 21,
+          "markdownDescription": "Stream raw CLI stdout/stderr into the Checkmarx output channel. API keys are never logged."
+        },
+        "checkmarxLocal.realtime.enabled": {
+          "type": "boolean",
+          "default": false,
+          "order": 30,
+          "markdownDescription": "Automatically scan the active file while editing. Toggle with `Checkmarx: Toggle Real-time Scan`."
+        },
+        "checkmarxLocal.realtime.trigger": {
+          "type": "string",
+          "enum": [
+            "onSave",
+            "onType"
+          ],
+          "enumDescriptions": [
+            "Scan after the document is saved. Lowest overhead.",
+            "Scan while typing, after a debounce. Creates an unsaved-content snapshot and runs the local engine."
+          ],
+          "default": "onSave",
+          "order": 31,
+          "markdownDescription": "When real-time scans are triggered."
+        },
+        "checkmarxLocal.realtime.debounceMs": {
+          "type": "number",
+          "default": 1200,
+          "minimum": 250,
+          "order": 32,
+          "markdownDescription": "Debounce for real-time scans."
+        },
+        "checkmarxLocal.realtime.maxFileSizeKb": {
+          "type": "number",
+          "default": 512,
+          "minimum": 1,
+          "order": 33,
+          "markdownDescription": "Skip real-time scans for files larger than this."
+        },
+        "checkmarxLocal.realtime.extensions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            ".java",
+            ".kt",
+            ".kts",
+            ".cs",
+            ".js",
+            ".jsx",
+            ".mjs",
+            ".cjs",
+            ".ts",
+            ".tsx",
+            ".py",
+            ".php",
+            ".go",
+            ".rb",
+            ".swift",
+            ".scala",
+            ".c",
+            ".h",
+            ".cc",
+            ".cpp",
+            ".cxx",
+            ".hpp",
+            ".vue",
+            ".svelte"
+          ],
+          "order": 34,
+          "markdownDescription": "File extensions eligible for real-time and local project scans."
+        },
+        "checkmarxLocal.diagnostics.enabled": {
+          "type": "boolean",
+          "default": true,
+          "order": 40,
+          "markdownDescription": "Publish Checkmarx findings as VS Code Problems diagnostics."
+        },
+        "checkmarxLocal.diagnostics.minSeverity": {
+          "type": "string",
+          "enum": [
+            "CRITICAL",
+            "HIGH",
+            "MEDIUM",
+            "LOW",
+            "INFO"
+          ],
+          "default": "LOW",
+          "order": 41,
+          "markdownDescription": "Minimum severity shown in Problems and the results tree."
+        },
+        "checkmarxLocal.results.groupBy": {
+          "type": "string",
+          "enum": [
+            "severity",
+            "file",
+            "type"
+          ],
+          "default": "severity",
+          "order": 42,
+          "markdownDescription": "Grouping used by the results tree."
+        },
+        "checkmarxLocal.mcp.enabled": {
+          "type": "boolean",
+          "default": true,
+          "order": 50,
+          "markdownDescription": "Register the Checkmarx MCP server with VS Code so AI agents can query scan results, trigger scans, and verify fixes."
+        },
+        "checkmarxLocal.ai.openChatAfterFixPrompt": {
+          "type": "boolean",
+          "default": true,
+          "order": 60,
+          "markdownDescription": "When using `Fix Finding with AI`, open the chat view with the prepared prompt. The prompt is also copied to the clipboard."
+        },
+        "checkmarxLocal.project.applicationName": {
+          "type": "string",
+          "default": "",
+          "order": 12,
+          "markdownDescription": "Checkmarx One application name associated with cloud project scans. Required by tenants that enforce application association (error `CODE: 225, Missing Associated Application`). Use an existing application name from **Checkmarx One \u2192 Applications**. The dashboard can also set this."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "typecheck": "tsc --noEmit",
+    "build": "npm run clean && node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "test": "tsx --test src/test/run-all.ts",
+    "test:watch": "tsx --test --watch src/test/run-all.ts",
+    "package": "npm run build && vsce package --no-dependencies --follow-symlinks",
+    "vscode:prepublish": "npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "adm-zip": "^0.5.16",
+    "https-proxy-agent": "^7.0.6",
+    "minimatch": "^10.0.3",
+    "tar": "^7.5.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.5.7",
+    "@types/node": "^24.10.0",
+    "@types/vscode": "1.101.0",
+    "@vscode/vsce": "^4.1.1",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}
