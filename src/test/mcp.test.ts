@@ -33,6 +33,21 @@ const sampleFinding: Finding = {
   nodes: [{ file: `${workspace}/app.py`, line: 7, name: 'query' }]
 };
 
+const sampleRealtimeFinding: Finding = {
+  key: 'realtime-1',
+  id: 'asca-1',
+  scanId: 'realtime-1',
+  mode: 'realtime',
+  engine: 'local',
+  type: 'sast',
+  severity: 'LOW',
+  title: 'Hardcoded Secret',
+  description: 'A secret is hardcoded in the source.',
+  file: `${workspace}/app.py`,
+  relativeFile: 'app.py',
+  line: 12
+};
+
 function sampleSummary(overrides: Partial<ScanSummary> = {}): ScanSummary {
   return {
     id: 'scan-1',
@@ -60,6 +75,9 @@ function fakeApi(observed?: { fileEngine?: string }): ScanApi {
     findings: [sampleFinding],
     counts: { ...emptyCounts(), HIGH: 1 },
     total: 1,
+    realtimeFindings: [sampleRealtimeFinding],
+    realtimeCounts: { ...emptyCounts(), LOW: 1 },
+    realtimeTotal: 1,
     history: [sampleSummary()]
   };
 
@@ -73,32 +91,41 @@ function fakeApi(observed?: { fileEngine?: string }): ScanApi {
       return sampleSummary({ id: 'scan-3', mode: 'file', file: `${workspace}/app.py`, relativeFile: 'app.py' });
     },
     getResults: async (query) => {
+      const realtime = query.source === 'realtime';
+      const base = realtime ? [sampleRealtimeFinding] : [sampleFinding];
       const filtered = query.severity?.length
-        ? [sampleFinding].filter((finding) => query.severity!.includes(finding.severity))
-        : [sampleFinding];
+        ? base.filter((finding) => query.severity!.includes(finding.severity))
+        : base;
       return {
-        scan: state.latest,
+        scan: realtime ? undefined : state.latest,
+        source: realtime ? 'realtime' : 'scan',
         findings: filtered,
         total: filtered.length,
-        counts: { ...emptyCounts(), HIGH: filtered.length }
+        counts: realtime ? { ...emptyCounts(), LOW: filtered.length } : { ...emptyCounts(), HIGH: filtered.length }
       };
     },
     getFinding: async (key) =>
       key === sampleFinding.key || key === sampleFinding.id
         ? { finding: sampleFinding, codeContext: '1 | cursor.execute(query)', codeStartLine: 1, codeEndLine: 1, fileExists: true }
         : undefined,
-    getFileFindings: (file) => (file === sampleFinding.file ? [sampleFinding] : []),
+    getFileFindings: (file, source = 'scan') => {
+      const base = source === 'realtime' ? [sampleRealtimeFinding] : [sampleFinding];
+      return base.filter((finding) => finding.file === file);
+    },
     listScans: () => [sampleSummary()],
     cancel: async () => true,
-    getFiles: () => [
-      {
-        file: `${workspace}/app.py`,
-        relativeFile: 'app.py',
-        findings: 1,
-        counts: { ...emptyCounts(), HIGH: 1 },
-        highestSeverity: 'HIGH'
-      }
-    ],
+    getFiles: (source = 'scan') =>
+      source === 'realtime'
+        ? []
+        : [
+            {
+              file: `${workspace}/app.py`,
+              relativeFile: 'app.py',
+              findings: 1,
+              counts: { ...emptyCounts(), HIGH: 1 },
+              highestSeverity: 'HIGH'
+            }
+          ],
     reveal: async () => undefined,
     clearResults: async () => undefined
   };
@@ -166,6 +193,7 @@ test('MCP server exposes tools and returns structured results', async () => {
     const tools = await client.listTools();
     const names = tools.tools.map((tool) => tool.name);
     assert.ok(names.includes('checkmarx_get_results'));
+    assert.ok(names.includes('checkmarx_get_realtime_results'));
     assert.ok(names.includes('checkmarx_scan_file'));
     assert.ok(names.includes('checkmarx_get_finding'));
 
@@ -179,6 +207,17 @@ test('MCP server exposes tools and returns structured results', async () => {
     })) as { content: Array<{ type: string; text?: string }>; structuredContent?: { total?: number } };
     assert.equal(result.structuredContent?.total, 1);
     assert.match(result.content[0]?.text ?? '', /SQL Injection/);
+    assert.doesNotMatch(result.content[0]?.text ?? '', /Hardcoded Secret/);
+
+    const realtime = (await client.callTool({
+      name: 'checkmarx_get_realtime_results',
+      arguments: { limit: 10 }
+    })) as { content: Array<{ type: string; text?: string }>; structuredContent?: { total?: number; source?: string } };
+    assert.equal(realtime.structuredContent?.total, 1);
+    assert.equal(realtime.structuredContent?.source, 'realtime');
+    assert.match(realtime.content[0]?.text ?? '', /real-time/);
+    assert.match(realtime.content[0]?.text ?? '', /Hardcoded Secret/);
+    assert.doesNotMatch(realtime.content[0]?.text ?? '', /SQL Injection/);
 
     const detail = (await client.callTool({
       name: 'checkmarx_get_finding',

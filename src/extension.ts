@@ -14,6 +14,7 @@ import { ScanApiAdapter } from './mcp/scanApiAdapter';
 import { McpBridge } from './mcp/bridge';
 import { RealtimeController } from './scans/realtime';
 import { ScanService } from './scans/scanService';
+import { DEFAULT_SCAN_FILTERS, type ScanListFilters } from './scans/scanFilters';
 import { FileStateStore } from './scans/stateStore';
 import { formatCounts } from './severity';
 import type { AuthConfig, CliInfo, Finding, ScanEngine, ScanSummary } from './types';
@@ -102,12 +103,37 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   let cloudUploadConfirmed = false;
   let mcpSettingEnabled = settings.load().mcpEnabled;
 
+  const scanFilters: ScanListFilters = {
+    scope:
+      context.workspaceState.get<string>('checkmarxLocal.scanFilterScope', DEFAULT_SCAN_FILTERS.scope) === 'file'
+        ? 'file'
+        : 'project',
+    engine:
+      context.workspaceState.get<string>('checkmarxLocal.scanFilterEngine', DEFAULT_SCAN_FILTERS.engine) === 'local'
+        ? 'local'
+        : 'cloud'
+  };
+
   const resultsProvider = new ResultsTreeProvider(
     () => scanService?.getFindings() ?? [],
     () => settings.load().groupBy,
     () => settings.load().minSeverity
   );
-  const scansProvider = new ScansTreeProvider(() => scanService?.listScans(25) ?? []);
+  const scansProvider = new ScansTreeProvider(
+    () => scanService?.listScans(25) ?? [],
+    () => scanService?.getSelectedScanId(),
+    () => scanFilters
+  );
+  const realtimeProvider = new ResultsTreeProvider(
+    () => scanService?.getRealtimeFindings() ?? [],
+    () => 'file',
+    () => settings.load().minSeverity,
+    {
+      label: 'No real-time findings',
+      description: 'Enable real-time scanning to see findings while you edit',
+      command: { command: 'checkmarxLocal.toggleRealtime', title: 'Enable real-time scanning' }
+    }
+  );
 
   const resultsView = vscode.window.createTreeView('checkmarxLocal.results', {
     treeDataProvider: resultsProvider,
@@ -117,6 +143,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     treeDataProvider: scansProvider,
     showCollapseAll: false
   });
+  vscode.window.createTreeView('checkmarxLocal.realtime', {
+    treeDataProvider: realtimeProvider,
+    showCollapseAll: true
+  });
+  updateScansViewMessage();
 
   detailsPanel = new DetailsPanel(context.extensionUri, {
     openFinding: async (key) => openFinding(key),
@@ -154,10 +185,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       statusBar.update(state);
       refreshDashboard();
     },
-    onFindingsChanged: (findings) => {
+    onFindingsChanged: () => {
       const snapshot = settings.load();
-      diagnostics.update(findings, snapshot.diagnosticsEnabled, snapshot.minSeverity);
+      diagnostics.update(scanService.getDiagnosticFindings(), snapshot.diagnosticsEnabled, snapshot.minSeverity);
       resultsProvider.refresh();
+      realtimeProvider.refresh();
       refreshDashboard();
     },
     onHistoryChanged: () => {
@@ -250,9 +282,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (!snapshot.realtimeEnabled) {
         scanService.clearRealtimeResults();
       }
-      const findings = scanService.getFindings();
+      const findings = scanService.getDiagnosticFindings();
       diagnostics.update(findings, snapshot.diagnosticsEnabled, snapshot.minSeverity);
       resultsProvider.refresh();
+      realtimeProvider.refresh();
       void vscode.commands.executeCommand('setContext', 'checkmarxLocal.realtimeEnabled', snapshot.realtimeEnabled);
       if (snapshot.mcpEnabled !== mcpSettingEnabled) {
         mcpSettingEnabled = snapshot.mcpEnabled;
@@ -828,6 +861,43 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     realtime.clearHashes();
   }
 
+  async function refreshResults(): Promise<void> {
+    resultsProvider.refresh();
+    scansProvider.refresh();
+    const snapshot = settings.load();
+    diagnostics.update(scanService.getDiagnosticFindings(), snapshot.diagnosticsEnabled, snapshot.minSeverity);
+
+    let pulled;
+    try {
+      pulled = await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: 'Checkmarx: fetching latest results from Checkmarx One…'
+        },
+        () => scanService.refreshCloudResults()
+      );
+    } catch (error) {
+      void vscode.window.showErrorMessage(
+        `Checkmarx: could not refresh results: ${error instanceof Error ? error.message : String(error)}`
+      );
+      return;
+    }
+
+    if (!pulled) {
+      return;
+    }
+
+    const updated = settings.load();
+    diagnostics.update(scanService.getDiagnosticFindings(), updated.diagnosticsEnabled, updated.minSeverity);
+    resultsProvider.refresh();
+    scansProvider.refresh();
+    void vscode.window.showInformationMessage(
+      pulled.adopted
+        ? `Checkmarx: loaded the latest cloud scan ${pulled.cloudScanId} (${pulled.findings} finding(s)).`
+        : `Checkmarx: refreshed ${pulled.findings} finding(s) from scan ${pulled.cloudScanId}.`
+    );
+  }
+
   async function showResults(): Promise<void> {
     await vscode.commands.executeCommand('checkmarxLocal.results.focus');
   }
@@ -928,7 +998,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   async function fixScanWithAi(scanId?: string): Promise<void> {
     const summary = scanService.getScan(scanId ?? scanService.getUiState().latest?.id ?? '');
-    const findings = scanService.getResults({ scanId: summary?.id }).findings;
+    const findings = (await scanService.getResults({ scanId: summary?.id })).findings;
     if (!summary || findings.length === 0) {
       void vscode.window.showInformationMessage('No findings to fix in this scan.');
       return;
@@ -948,6 +1018,74 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return;
     }
     await detailsPanel.showScan(summary);
+  }
+
+  async function selectScan(scanIdOrNode?: unknown): Promise<void> {
+    const scanId = scanIdFromArg(scanIdOrNode);
+    if (!scanId) {
+      return;
+    }
+    try {
+      await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: 'Checkmarx: loading scan results…'
+        },
+        () => scanService.selectScan(scanId)
+      );
+    } catch (error) {
+      void vscode.window.showErrorMessage(
+        `Checkmarx: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+    resultsProvider.refresh();
+    scansProvider.refresh();
+  }
+
+  function updateScansViewMessage(): void {
+    const scope = scanFilters.scope === 'project' ? 'Project scans' : 'Single-file scans';
+    const engine = scanFilters.engine === 'cloud' ? 'Checkmarx One' : 'ASCA local';
+    scansView.message = `${scope} · ${engine}`;
+  }
+
+  async function filterScanScope(): Promise<void> {
+    const choice = await vscode.window.showQuickPick(
+      [
+        { label: 'All project scans', description: 'Whole-project scans', value: 'project' as const },
+        { label: 'Single-file scans', description: 'Scans of one file', value: 'file' as const }
+      ],
+      {
+        title: 'Checkmarx: filter scans by scope',
+        placeHolder: `Currently: ${scanFilters.scope === 'project' ? 'project scans' : 'single-file scans'}`
+      }
+    );
+    if (!choice) {
+      return;
+    }
+    scanFilters.scope = choice.value;
+    await context.workspaceState.update('checkmarxLocal.scanFilterScope', choice.value);
+    scansProvider.refresh();
+    updateScansViewMessage();
+  }
+
+  async function filterScanEngine(): Promise<void> {
+    const choice = await vscode.window.showQuickPick(
+      [
+        { label: 'Checkmarx One (cloud)', description: 'Cloud scans', value: 'cloud' as const },
+        { label: 'ASCA (local)', description: 'Local scans', value: 'local' as const }
+      ],
+      {
+        title: 'Checkmarx: filter scans by engine',
+        placeHolder: `Currently: ${scanFilters.engine === 'cloud' ? 'cloud' : 'local'}`
+      }
+    );
+    if (!choice) {
+      return;
+    }
+    scanFilters.engine = choice.value;
+    await context.workspaceState.update('checkmarxLocal.scanFilterEngine', choice.value);
+    scansProvider.refresh();
+    updateScansViewMessage();
   }
 
   async function exportResults(): Promise<void> {
@@ -1106,12 +1244,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   register('checkmarxLocal.toggleRealtime', () => toggleRealtime());
   register('checkmarxLocal.cancelScan', () => cancelScan());
   register('checkmarxLocal.clearResults', () => clearResults());
-  register('checkmarxLocal.refreshResults', () => {
-    const snapshot = settings.load();
-    diagnostics.update(scanService.getFindings(), snapshot.diagnosticsEnabled, snapshot.minSeverity);
-    resultsProvider.refresh();
-    scansProvider.refresh();
-  });
+  register('checkmarxLocal.refreshResults', () => refreshResults());
+  register('checkmarxLocal.filterScanScope', () => filterScanScope());
+  register('checkmarxLocal.filterScanEngine', () => filterScanEngine());
   register('checkmarxLocal.showResults', () => showResults());
   register('checkmarxLocal.openFinding', (arg) => {
     const key = keyFromArg(arg);
@@ -1128,6 +1263,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   register('checkmarxLocal.fixFileWithAi', (arg) => fixFileWithAi(arg));
   register('checkmarxLocal.copyFixPrompt', (arg) => copyFixPrompt(arg));
   register('checkmarxLocal.showScanSummary', (arg) => showScanSummary(arg));
+  register('checkmarxLocal.selectScan', (arg) => selectScan(arg));
   register('checkmarxLocal.exportResults', () => exportResults());
   register('checkmarxLocal.installCli', () => installCliInteractive());
   register('checkmarxLocal.selectCli', () => selectCli());

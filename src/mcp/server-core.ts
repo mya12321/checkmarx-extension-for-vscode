@@ -7,12 +7,18 @@ import type { Finding, FindingDetails, ResultsResponse, ScanSummary, Severity } 
 
 const severitySchema = z.enum(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO']);
 const findingTypeSchema = z.enum(['sast', 'sca', 'iac', 'secret', 'other']);
+const findingSourceSchema = z.enum(['scan', 'realtime']);
 
 const INSTRUCTIONS = `You are connected to Checkmarx through the user's local VS Code extension. The extension runs the Checkmarx CLI and keeps the latest scan results for the open workspace.
 
+Results are never merged across sources:
+- checkmarx_get_results returns the findings of a single scan (the selected scan, or the latest project scan by default).
+- checkmarx_get_realtime_results returns findings from real-time scans only.
+- checkmarx_get_file_findings can read either source, one at a time.
+
 Follow this workflow for security review and remediation:
-1. Call checkmarx_get_state to see the latest scan, authentication status, and finding counts.
-2. Use checkmarx_get_results or checkmarx_get_file_findings to inspect findings before editing code. Do not guess finding ids or file paths.
+1. Call checkmarx_get_state to see the latest scan, authentication status, and finding counts (scan and real-time are reported separately).
+2. Use checkmarx_get_results (scan) or checkmarx_get_realtime_results (real-time) to inspect findings before editing code. Do not guess finding ids or file paths.
 3. Use checkmarx_get_finding for full details, including remediation advice and data-flow nodes.
 4. Fix the root cause, preserve existing behavior, and keep the change minimal. Never suppress a finding or weaken a security control just to make a scan pass.
 5. After editing, call checkmarx_scan_file on each changed file. If findings remain, continue fixing and rescanning.
@@ -100,10 +106,10 @@ export function createCheckmarxServer(client: BridgeClient): McpServer {
     name: 'checkmarx_get_results',
     title: 'Get scan findings',
     description:
-      'Returns findings from the latest scan or a specific scan, with optional severity/type/file filters. Findings include file, line, severity, title, and description. Set include_flow=true to include data-flow nodes.',
+      'Returns findings from exactly one scan: the scan id you pass, the scan selected in VS Code, or the latest project scan. Real-time findings are not included; use checkmarx_get_realtime_results for those. Findings include file, line, severity, title, and description. Set include_flow=true to include data-flow nodes.',
     annotations: { readOnlyHint: true, openWorldHint: false },
     inputSchema: {
-      scan_id: z.string().optional().describe('Scan id from checkmarx_list_scans. Defaults to the latest scan view.'),
+      scan_id: z.string().optional().describe('Scan id from checkmarx_list_scans. Defaults to the scan selected in VS Code.'),
       severity: z.array(severitySchema).optional().describe('Only include these severities.'),
       type: findingTypeSchema.optional().describe('Only include this finding type.'),
       file: z.string().optional().describe('Filter by a workspace-relative or absolute file path.'),
@@ -114,6 +120,34 @@ export function createCheckmarxServer(client: BridgeClient): McpServer {
     handler: async (args) => {
       const response = await client.getResults({
         scanId: args.scan_id,
+        severity: args.severity as Severity[] | undefined,
+        type: args.type,
+        file: args.file,
+        state: args.state,
+        limit: args.limit ?? 50,
+        includeFlow: args.include_flow === true
+      });
+      return result(formatResults(response), { ...response });
+    }
+  });
+
+  registerTool(server, {
+    name: 'checkmarx_get_realtime_results',
+    title: 'Get real-time scan findings',
+    description:
+      'Returns findings produced by real-time scans (on save or while typing) only. Scan results are not included; use checkmarx_get_results for those. Supports severity/type/file/state filters and include_flow=true.',
+    annotations: { readOnlyHint: true, openWorldHint: false },
+    inputSchema: {
+      severity: z.array(severitySchema).optional().describe('Only include these severities.'),
+      type: findingTypeSchema.optional().describe('Only include this finding type.'),
+      file: z.string().optional().describe('Filter by a workspace-relative or absolute file path.'),
+      state: z.string().optional().describe('Filter by Checkmarx state, for example TO_VERIFY.'),
+      limit: z.number().int().min(1).max(200).optional().describe('Maximum findings to return (default 50).'),
+      include_flow: z.boolean().optional().describe('Include data-flow nodes. Default false.')
+    },
+    handler: async (args) => {
+      const response = await client.getResults({
+        source: 'realtime',
         severity: args.severity as Severity[] | undefined,
         type: args.type,
         file: args.file,
@@ -148,14 +182,16 @@ export function createCheckmarxServer(client: BridgeClient): McpServer {
     name: 'checkmarx_get_file_findings',
     title: 'Get findings for a file',
     description:
-      'Returns all current findings for one workspace file. Use this before fixing a file, or after a rescan to verify the result.',
+      'Returns findings for one workspace file from a single source: "scan" (default, the selected/latest scan) or "realtime" (real-time scans only). Sources are never merged. Use this before fixing a file, or after a rescan to verify the result.',
     annotations: { readOnlyHint: true, openWorldHint: false },
     inputSchema: {
       file: z.string().describe('Workspace-relative or absolute path.'),
+      source: findingSourceSchema.optional().describe('Which findings to return: "scan" (default) or "realtime".'),
       include_code: z.boolean().optional().describe('Include the surrounding code for each finding. Default true.')
     },
     handler: async (args) => {
-      const response = await client.getFileFindings(args.file);
+      const source = args.source ?? 'scan';
+      const response = await client.getFileFindings(args.file, source);
       const includeCode = args.include_code !== false;
       let details: Array<{ key: string; codeContext?: string }> = [];
       if (includeCode && response.findings.length > 0) {
@@ -171,14 +207,18 @@ export function createCheckmarxServer(client: BridgeClient): McpServer {
         );
       }
       const contextByKey = new Map(details.map((entry) => [entry.key, entry.codeContext]));
+      const label = source === 'realtime' ? 'real-time finding(s)' : 'finding(s)';
       const text = [
-        `${response.findings.length} finding(s) in ${response.relativeFile}:`,
+        `${response.findings.length} ${label} in ${response.relativeFile}:`,
         ...response.findings.map((finding) => formatFindingLine(finding, contextByKey.get(finding.key))),
         '',
-        'After editing this file, call checkmarx_scan_file with this path to verify the fix.'
+        source === 'realtime'
+          ? 'Real-time findings come from the ASCA engine and are separate from scan results.'
+          : 'After editing this file, call checkmarx_scan_file with this path to verify the fix.'
       ].join('\n');
       return result(text, {
         ...response,
+        source,
         findings: response.findings.map((finding) => ({
           ...finding,
           codeContext: contextByKey.get(finding.key)
@@ -208,16 +248,22 @@ export function createCheckmarxServer(client: BridgeClient): McpServer {
   registerTool(server, {
     name: 'checkmarx_get_files',
     title: 'List files with findings',
-    description: 'Returns files that currently have Checkmarx findings, with severity counts.',
+    description:
+      'Returns files that have findings from one source: "scan" (default, the selected/latest scan) or "realtime" (real-time scans only), with severity counts.',
     annotations: { readOnlyHint: true, openWorldHint: false },
-    inputSchema: {},
-    handler: async () => {
-      const files = await client.getFiles();
+    inputSchema: {
+      source: findingSourceSchema.optional().describe('Which findings to list: "scan" (default) or "realtime".')
+    },
+    handler: async (args) => {
+      const source = args.source ?? 'scan';
+      const files = await client.getFiles(source);
       const text =
         files.length === 0
-          ? 'No files currently have Checkmarx findings.'
+          ? source === 'realtime'
+            ? 'No files currently have real-time Checkmarx findings.'
+            : 'No files currently have Checkmarx scan findings.'
           : files.map((file) => `${file.relativeFile}: ${file.findings} finding(s) (${formatCounts(file.counts)})`).join('\n');
-      return result(text, { files });
+      return result(text, { source, files });
     }
   });
 
@@ -277,7 +323,7 @@ export function createCheckmarxServer(client: BridgeClient): McpServer {
               type: 'text',
               text: `Use the Checkmarx tools to review and fix security findings${severity} in ${target}.
 
-1. Call checkmarx_get_results (or checkmarx_get_file_findings for a single file) and choose the highest-severity findings.
+1. Call checkmarx_get_results for scan findings (or checkmarx_get_realtime_results for real-time findings) and choose the highest-severity ones.
 2. Call checkmarx_get_finding for each finding to understand the data flow and remediation advice.
 3. Edit the source code to fix the root cause. Keep changes minimal and preserve behavior.
 4. After each edit, call checkmarx_scan_file for the changed file and confirm the finding is gone.
@@ -357,7 +403,8 @@ function formatState(state: BridgeState): string {
     `Authenticated: ${state.authenticated ? 'yes' : 'no'}`,
     `CLI: ${state.cliAvailable ? `${state.cliVersion ?? 'unknown version'} (${state.cliPath})` : 'not available'}`,
     `Real-time scanning: ${state.realtimeEnabled ? 'enabled' : 'disabled'}`,
-    `Findings: ${state.total}${state.total > 0 ? ` (${formatCounts(state.counts)})` : ''}`
+    `Scan findings (selected scan): ${state.total}${state.total > 0 ? ` (${formatCounts(state.counts)})` : ''}`,
+    `Real-time findings: ${state.realtimeTotal}${state.realtimeTotal > 0 ? ` (${formatCounts(state.realtimeCounts)})` : ''}`
   ];
   if (state.active) {
     lines.push(`Active scan: ${formatScan(state.active)}`);
@@ -375,11 +422,14 @@ function formatScan(scan: ScanSummary): string {
 }
 
 function formatResults(response: ResultsResponse): string {
+  const label = response.source === 'realtime' ? 'real-time' : 'scan';
   if (response.findings.length === 0) {
-    return `No findings matched. Scan: ${response.scan ? formatScan(response.scan) : 'none'}`;
+    return response.scan
+      ? `No ${label} findings matched. Scan: ${formatScan(response.scan)}`
+      : `No ${label} findings matched.`;
   }
   const lines = [
-    `${response.total} finding(s) matched${response.scan ? ` in ${formatScan(response.scan)}` : ''}.`,
+    `${response.total} ${label} finding(s) matched${response.scan ? ` in ${formatScan(response.scan)}` : ''}.`,
     `Counts: ${formatCounts(response.counts)}`,
     ''
   ];

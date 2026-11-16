@@ -1,5 +1,8 @@
 import './normalize.test';
 import './cli.test';
+import './gitignore.test';
+import './refresh.test';
+import './scanFilters.test';
 import './merge.test';
 import './installer.test';
 import './mcp.test';

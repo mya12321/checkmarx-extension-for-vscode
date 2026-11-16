@@ -22,6 +22,8 @@ export interface CloudScanRequest {
   branch: string;
   scanTypes: string[];
   fileFilter?: string;
+  excludeGitFolder?: boolean;
+  fileFilterExt?: string[];
   auth: AuthConfig;
 }
 
@@ -82,6 +84,8 @@ export class CxCli {
         branch: request.branch,
         scanTypes: request.scanTypes,
         fileFilter: request.fileFilter,
+        excludeGitFolder: request.excludeGitFolder,
+        fileFilterExt: request.fileFilterExt,
         extraArgs: this.getExtraArgs()
       }),
       {
@@ -140,6 +144,36 @@ export class CxCli {
       payload: extractJson(content),
       filePath: resultsPath
     };
+  }
+
+  async listProjects(auth: AuthConfig, offset: number, limit: number, signal?: AbortSignal): Promise<unknown[]> {
+    const result = await this.run(
+      ['project', 'list', '--format', 'json', '--filter', `offset=${offset}`, '--filter', `limit=${limit}`],
+      { signal, timeoutMs: 60_000, env: this.buildEnv(auth) }
+    );
+    if (result.code !== 0) {
+      throw this.failure('Failed to list Checkmarx projects', result);
+    }
+    if (!result.stdout.trim()) {
+      return [];
+    }
+    const payload = extractJson<unknown>(result.stdout);
+    return Array.isArray(payload) ? payload : [];
+  }
+
+  async listScans(projectId: string, auth: AuthConfig, signal?: AbortSignal): Promise<unknown[]> {
+    const result = await this.run(
+      ['scan', 'list', '--format', 'json', '--filter', `project-id=${projectId}`, '--filter', 'limit=20'],
+      { signal, timeoutMs: 60_000, env: this.buildEnv(auth) }
+    );
+    if (result.code !== 0) {
+      throw this.failure('Failed to list Checkmarx scans', result);
+    }
+    if (!result.stdout.trim()) {
+      return [];
+    }
+    const payload = extractJson<unknown>(result.stdout);
+    return Array.isArray(payload) ? payload : [];
   }
 
   async scanAsca(file: string, signal?: AbortSignal, timeoutMs = 15 * 60 * 1000): Promise<unknown> {

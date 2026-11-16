@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { cloudResultsArgs, cloudScanCreateArgs, ascaScanArgs } from '../cli/args';
+import type { CxCli, CloudScanRequest } from '../cli/client';
 import { extractJson } from '../json';
+import { noopLogger } from '../logging';
+import { runCloudScan, type CloudScanOptions } from '../scans/cloudScanner';
 import { formatCounts, meetsMinSeverity, normalizeSeverity, severityRank } from '../severity';
 import type { Finding } from '../types';
 
@@ -104,4 +110,74 @@ test('extracts JSON from mixed CLI output and BOM-prefixed files', () => {
 test('finding objects are plain data', () => {
   const item = finding({ severity: 'MEDIUM' });
   assert.equal(item.severity, 'MEDIUM');
+});
+
+function cloudOptions(root: string, mode: 'project' | 'file'): CloudScanOptions {
+  return {
+    root,
+    projectName: 'p',
+    applicationName: 'app',
+    branch: 'main',
+    scanTypes: ['sast'],
+    auth: { apiKey: 'key', baseUri: 'https://ast.example', tenant: 'tenant' },
+    signal: new AbortController().signal,
+    timeoutMs: 5_000,
+    pollIntervalMs: 10,
+    mode,
+    scanId: 'scan',
+    outputDirectory: join(root, '.out'),
+    logger: noopLogger
+  };
+}
+
+async function capturedCloudRequest(root: string, mode: 'project' | 'file'): Promise<CloudScanRequest> {
+  let request: CloudScanRequest | undefined;
+  const cli = {
+    createCloudScan: async (candidate: CloudScanRequest) => {
+      request = candidate;
+      throw new Error('stop after create');
+    }
+  } as unknown as CxCli;
+  await assert.rejects(runCloudScan(cli, cloudOptions(root, mode)), /stop after create/);
+  assert.ok(request);
+  return request;
+}
+
+test('project cloud scans turn git-ignored paths into Ant exclusions', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'cx-cloud-'));
+  try {
+    await writeFile(join(root, '.gitignore'), 'node_modules\n', 'utf8');
+    await mkdir(join(root, 'node_modules', 'left-pad'), { recursive: true });
+    await writeFile(join(root, 'node_modules', 'left-pad', 'index.js'), '', 'utf8');
+    await writeFile(join(root, 'main.js'), '', 'utf8');
+
+    const request = await capturedCloudRequest(root, 'project');
+    assert.equal(request.excludeGitFolder, true);
+    assert.deepEqual(request.fileFilterExt, ['!node_modules']);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('project cloud scans skip gitignore filtering when nothing is ignored', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'cx-cloud-'));
+  try {
+    const request = await capturedCloudRequest(root, 'project');
+    assert.equal(request.excludeGitFolder, true);
+    assert.deepEqual(request.fileFilterExt, []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('single-file cloud scans do not add project-wide git flags', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'cx-cloud-'));
+  try {
+    await writeFile(join(root, '.gitignore'), 'node_modules\n', 'utf8');
+    const request = await capturedCloudRequest(root, 'file');
+    assert.equal(request.excludeGitFolder, false);
+    assert.equal(request.fileFilterExt, undefined);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

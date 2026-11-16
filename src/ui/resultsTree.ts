@@ -47,7 +47,12 @@ export class ResultsTreeProvider implements vscode.TreeDataProvider<ResultNode>,
   constructor(
     private readonly getFindings: () => Finding[],
     private readonly getGroupBy: () => GroupKind,
-    private readonly getMinSeverity: () => Severity
+    private readonly getMinSeverity: () => Severity,
+    private readonly emptyState: { label: string; description: string; command?: vscode.Command } = {
+      label: 'No Checkmarx findings',
+      description: 'Run a scan or select another scan',
+      command: { command: 'checkmarxLocal.scanProject', title: 'Scan project' }
+    }
   ) {}
 
   refresh(): void {
@@ -131,10 +136,10 @@ export class ResultsTreeProvider implements vscode.TreeDataProvider<ResultNode>,
       return [
         {
           kind: 'message',
-          label: 'No Checkmarx findings',
-          description: 'Run a scan to populate results',
+          label: this.emptyState.label,
+          description: this.emptyState.description,
           icon: new vscode.ThemeIcon('shield'),
-          command: { command: 'checkmarxLocal.scanProject', title: 'Scan project' }
+          command: this.emptyState.command
         }
       ];
     }

@@ -2,6 +2,7 @@ import type {
   FileSummary,
   Finding,
   FindingDetails,
+  FindingSource,
   ResultsQuery,
   ResultsResponse,
   ScanEngine,
@@ -18,10 +19,10 @@ export interface ScanApi {
   scanFile(file: string, options?: { engine?: ScanEngine; wait?: boolean }): Promise<ScanSummary>;
   getResults(query: ResultsQuery): Promise<ResultsResponse>;
   getFinding(key: string, includeCode: boolean): Promise<FindingDetails | undefined>;
-  getFileFindings(file: string): Finding[];
+  getFileFindings(file: string, source?: FindingSource): Finding[];
   listScans(limit: number): ScanSummary[];
   cancel(scanId?: string): Promise<boolean>;
-  getFiles(): FileSummary[];
+  getFiles(source?: FindingSource): FileSummary[];
   reveal(file: string, line?: number, column?: number): Promise<void>;
   clearResults(): Promise<void>;
 }
@@ -36,8 +37,12 @@ export interface BridgeState {
   realtimeEnabled: boolean;
   active?: ScanSummary;
   latest?: ScanSummary;
+  /** Counts for the selected scan. */
   counts: Record<Severity, number>;
   total: number;
+  /** Counts for real-time findings only. */
+  realtimeCounts: Record<Severity, number>;
+  realtimeTotal: number;
   history: ScanSummary[];
 }
 
@@ -118,6 +123,8 @@ export function stateToBridge(state: ScanState, version: string, workspace: stri
     latest: publicScan(state.latest),
     counts: state.counts,
     total: state.total,
+    realtimeCounts: state.realtimeCounts,
+    realtimeTotal: state.realtimeTotal,
     history: state.history.map((scan) => publicScan(scan) ?? scan)
   };
 }

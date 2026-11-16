@@ -1,13 +1,18 @@
 import * as vscode from 'vscode';
 import type { ScanSummary } from '../types';
 import { formatCounts } from '../severity';
-import { modeLabel, statusIcon } from './icons';
+import { applyScanFilters, DEFAULT_SCAN_FILTERS, type ScanListFilters } from '../scans/scanFilters';
+import { statusIcon } from './icons';
 
 export class ScansTreeProvider implements vscode.TreeDataProvider<ScanSummary>, vscode.Disposable {
   private readonly emitter = new vscode.EventEmitter<ScanSummary | undefined>();
   readonly onDidChangeTreeData = this.emitter.event;
 
-  constructor(private readonly getHistory: () => ScanSummary[]) {}
+  constructor(
+    private readonly getHistory: () => ScanSummary[],
+    private readonly getSelectedId: () => string | undefined = () => undefined,
+    private readonly getFilters: () => ScanListFilters = () => DEFAULT_SCAN_FILTERS
+  ) {}
 
   refresh(): void {
     this.emitter.fire(undefined);
@@ -17,25 +22,29 @@ export class ScansTreeProvider implements vscode.TreeDataProvider<ScanSummary>, 
     if (element) {
       return [];
     }
-    return this.getHistory();
+    return applyScanFilters(this.getHistory(), this.getFilters());
   }
 
   getTreeItem(scan: ScanSummary): vscode.TreeItem {
-    const item = new vscode.TreeItem(`${modeLabel(scan.mode)} scan`, vscode.TreeItemCollapsibleState.None);
+    const engine = scan.engine === 'cloud' ? 'Checkmarx One' : 'ASCA local';
+    const kind = scan.mode === 'project' ? 'project' : 'file';
+    const item = new vscode.TreeItem(`${engine} ${kind} scan`, vscode.TreeItemCollapsibleState.None);
     item.id = scan.id;
     const count = `${scan.totalFindings} finding${scan.totalFindings === 1 ? '' : 's'}`;
     const when = scan.startedAt ? relativeTime(scan.startedAt) : '';
-    item.description = `${scan.status} · ${count} · ${when}`;
+    const selected = this.getSelectedId() === scan.id ? ' · selected' : '';
+    item.description = `${scan.status} · ${count} · ${when}${selected}`;
     item.iconPath = statusIcon(scan.status);
     item.contextValue = 'checkmarxScan';
     item.command = {
-      command: 'checkmarxLocal.showScanSummary',
-      title: 'Show scan summary',
+      command: 'checkmarxLocal.selectScan',
+      title: 'Show results of this scan',
       arguments: [scan.id]
     };
     const tooltip = new vscode.MarkdownString();
-    tooltip.appendMarkdown(`**${modeLabel(scan.mode)} scan · ${scan.status}**\n\n`);
-    tooltip.appendMarkdown(`Engine: ${scan.engine}\n\n`);
+    tooltip.appendMarkdown(`**${engine} scan · ${scan.status}**\n\n`);
+    tooltip.appendMarkdown(`Engine: ${scan.engine}${scan.scanTypes.length > 0 ? ` (${scan.scanTypes.join(', ')})` : ''}\n\n`);
+    tooltip.appendMarkdown('Click to show these findings in the Results view; use the details button for the scan summary.\n\n');
     if (scan.projectName) {
       tooltip.appendMarkdown(`Project: ${scan.projectName}${scan.branch ? ` (${scan.branch})` : ''}\n\n`);
     }

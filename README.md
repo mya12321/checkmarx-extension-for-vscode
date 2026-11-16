@@ -30,7 +30,7 @@ Click the **Checkmarx** icon in the Activity Bar. The **Dashboard** view opens f
 - Severity summary, latest scan, **Open results**, and **Clear**.
 - CLI status with **Install / update** and **Select path**, plus MCP status and **Restart MCP**.
 
-Results and Scans remain available as separate views below the dashboard in the same Checkmarx Activity Bar container.
+Below the dashboard, **Scans** lists scans newest first and can be filtered by scope (all project scans or single-file scans) and by engine (Checkmarx One cloud or local ASCA); the default is cloud project scans. Filtering is remembered per workspace, and the active filter is shown above the list. **Results** shows exactly one scan — the latest project scan by default, or whichever scan you click — with no file or real-time results merged in. **Realtime Results** is a separate view for real-time scan findings. The graph button on a scan opens its summary without leaving the list.
 
 ## Requirements
 
@@ -110,6 +110,7 @@ Run **Checkmarx: Toggle Real-time Scan** or enable `checkmarxLocal.realtime.enab
 - `onType` scans a temporary snapshot of the unsaved editor content, debounced by `checkmarxLocal.realtime.debounceMs`.
 - Large, generated, minified, excluded, and unsupported files are skipped.
 - Results for a file replace older results for that file, so fixing code and rescanning clears stale diagnostics.
+- Real-time findings appear in the **Realtime Results** view (grouped by file) and in Problems; they are not mixed into the Results view.
 
 ## MCP integration and AI auto-fix
 
@@ -141,14 +142,15 @@ The MCP server instructions require the agent to:
 
 | Tool | Purpose |
 | --- | --- |
-| `checkmarx_get_state` | Auth/CLI state, latest scan, counts, active scan progress. |
+| `checkmarx_get_state` | Auth/CLI state, latest scan, and separate scan vs real-time finding counts. |
 | `checkmarx_scan_project` | Start a project scan with `engine="local"` or `"cloud"` (defaults to the extension setting), optionally wait. |
 | `checkmarx_scan_file` | Scan one file; `engine="local"` is the default for fix verification, `engine="cloud"` uploads that file after confirmation. |
-| `checkmarx_get_results` | List findings with severity/type/file filters. |
+| `checkmarx_get_results` | Findings from exactly one scan (selected or `scan_id`), with severity/type/file filters. No real-time merging. |
+| `checkmarx_get_realtime_results` | Findings from real-time scans only. |
 | `checkmarx_get_finding` | Full details, data flow, and surrounding code. |
-| `checkmarx_get_file_findings` | Findings for one file, with optional code context. |
+| `checkmarx_get_file_findings` | Findings for one file from `source="scan"` (default) or `source="realtime"`, with optional code context. |
 | `checkmarx_list_scans` | Recent scan summaries. |
-| `checkmarx_get_files` | Files with current findings and counts. |
+| `checkmarx_get_files` | Files with findings for `source="scan"` (default) or `source="realtime"`. |
 | `checkmarx_cancel_scan` | Cancel the active scan. |
 | `checkmarx_open_finding` | Reveal a finding in the editor. |
 
@@ -233,7 +235,7 @@ VS Code
       └── dist/mcp-server.js (stdio) ── HTTP ── McpBridge
 ```
 
-- Cloud scans use `cx scan create --async --scan-info-format json`, poll `cx scan show`, and download the JSON report with `cx results show --report-format json`.
+- Cloud scans use `cx scan create --async --scan-info-format json`, poll `cx scan show`, and download the JSON report with `cx results show --report-format json`. Project scans pass `--exclude-git-folder`, and the extension evaluates every `.gitignore` in the tree itself (nested files, anchoring, `**` and `!` re-inclusion) before forwarding ignored paths as `--file-filter-ext` exclusions, because the CLI's own `--use-gitignore` only reads the root file and matches basenames.
 - Local scans use `cx scan asca -s <file>`. The extension deliberately does not set `--agent` for local scans, so the CLI's local default path is used. Cloud scans never include credentials in argv; the API key travels in `CX_APIKEY`.
 - Results are normalized into a single `Finding` model and persisted per workspace under extension global storage. Raw CLI payloads are dropped from persistence.
 - The MCP bridge is loopback-only and authenticated with a random per-process token. The MCP server receives the token through its environment and can reload it from a mode-0600 bridge file if the extension restarts.

@@ -67,6 +67,9 @@ export class BridgeClient {
     if (query.scanId) {
       params.set('scanId', query.scanId);
     }
+    if (query.source === 'realtime') {
+      params.set('source', 'realtime');
+    }
     if (query.severity?.length) {
       params.set('severity', query.severity.join(','));
     }
@@ -94,8 +97,11 @@ export class BridgeClient {
     return response.finding;
   }
 
-  async getFileFindings(file: string): Promise<{ file: string; relativeFile: string; findings: Finding[]; total: number }> {
-    const params = new URLSearchParams({ file });
+  async getFileFindings(
+    file: string,
+    source: 'scan' | 'realtime' = 'scan'
+  ): Promise<{ file: string; relativeFile: string; source: string; findings: Finding[]; total: number }> {
+    const params = new URLSearchParams({ file, source });
     return await this.request('GET', `/api/file-findings?${params.toString()}`);
   }
 
@@ -104,8 +110,8 @@ export class BridgeClient {
     return response.scans;
   }
 
-  async getFiles(): Promise<FileSummary[]> {
-    const response = await this.request<{ files: FileSummary[] }>('GET', '/api/files');
+  async getFiles(source: 'scan' | 'realtime' = 'scan'): Promise<FileSummary[]> {
+    const response = await this.request<{ files: FileSummary[] }>('GET', `/api/files?source=${source}`);
     return response.files;
   }
 

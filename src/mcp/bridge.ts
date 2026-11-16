@@ -196,10 +196,12 @@ export class McpBridge {
           throw new HttpError(400, 'BAD_REQUEST', 'file is required');
         }
         const file = this.resolveFile(requested);
-        const findings = this.options.api.getFileFindings(file).map((finding) => trimFinding(finding, true));
+        const source = url.searchParams.get('source') === 'realtime' ? 'realtime' : 'scan';
+        const findings = this.options.api.getFileFindings(file, source).map((finding) => trimFinding(finding, true));
         this.send(response, 200, {
           file,
           relativeFile: normalizeSlashes(path.relative(this.options.workspace, file)),
+          source,
           findings,
           total: findings.length
         });
@@ -213,7 +215,8 @@ export class McpBridge {
       }
 
       if (method === 'GET' && pathname === '/api/files') {
-        this.send(response, 200, { files: this.options.api.getFiles() });
+        const source = url.searchParams.get('source') === 'realtime' ? 'realtime' : 'scan';
+        this.send(response, 200, { source, files: this.options.api.getFiles(source) });
         return;
       }
 
@@ -378,6 +381,7 @@ function parseResultsQuery(url: URL): ResultsQuery {
   const limitValue = Number(url.searchParams.get('limit'));
   return {
     scanId: url.searchParams.get('scanId') ?? undefined,
+    source: url.searchParams.get('source') === 'realtime' ? 'realtime' : 'scan',
     severity: severityValues.length > 0 ? severityValues : undefined,
     type: type && allowedTypes.includes(type) ? (type as ResultsQuery['type']) : undefined,
     file: url.searchParams.get('file') ?? undefined,

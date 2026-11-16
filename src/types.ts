@@ -105,8 +105,12 @@ export interface ScanRecord {
   findings: Finding[];
 }
 
+export type FindingSource = 'scan' | 'realtime';
+
 export interface ResultsQuery {
   scanId?: string;
+  /** Which result set to read. Defaults to the selected scan. */
+  source?: FindingSource;
   severity?: Severity[];
   type?: FindingType;
   file?: string;
@@ -117,6 +121,7 @@ export interface ResultsQuery {
 
 export interface ResultsResponse {
   scan?: ScanSummary;
+  source?: FindingSource;
   findings: Finding[];
   total: number;
   counts: SeverityCounts;
@@ -146,9 +151,14 @@ export interface ScanState {
   cliPath?: string;
   cliVersion?: string;
   realtimeEnabled: boolean;
+  /** Findings of the selected scan (no merging with other sources). */
   findings: Finding[];
   counts: SeverityCounts;
   total: number;
+  /** Findings produced by real-time scans only. */
+  realtimeFindings: Finding[];
+  realtimeCounts: SeverityCounts;
+  realtimeTotal: number;
   history: ScanSummary[];
 }
 
@@ -173,11 +183,15 @@ export interface PersistedSources {
   files: Array<{
     file: string;
     scanId: string;
+    engine?: ScanEngine;
+    scanTypes?: string[];
     findings: Finding[];
   }>;
   realtime: Array<{
     file: string;
     scanId: string;
+    engine?: ScanEngine;
+    scanTypes?: string[];
     findings: Finding[];
   }>;
 }

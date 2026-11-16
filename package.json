@@ -2,7 +2,7 @@
   "name": "checkmarx-local",
   "displayName": "Checkmarx Local Scan & MCP",
   "description": "Run Checkmarx CLI scans from VS Code with an API key, including local ASCA scans, real-time scanning, an Activity Bar dashboard, and an MCP server so AI agents can read results and fix code.",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "publisher": "checkmarx-local",
   "license": "MIT",
   "repository": {
@@ -36,6 +36,7 @@
     "onStartupFinished",
     "onView:checkmarxLocal.dashboard",
     "onView:checkmarxLocal.results",
+    "onView:checkmarxLocal.realtime",
     "onView:checkmarxLocal.scans"
   ],
   "capabilities": {
@@ -74,16 +75,22 @@
           "contextualTitle": "Checkmarx Dashboard"
         },
         {
+          "id": "checkmarxLocal.scans",
+          "name": "Scans",
+          "icon": "media/history.svg",
+          "contextualTitle": "Checkmarx Scans"
+        },
+        {
           "id": "checkmarxLocal.results",
           "name": "Results",
           "icon": "media/checkmarx.svg",
           "contextualTitle": "Checkmarx Results"
         },
         {
-          "id": "checkmarxLocal.scans",
-          "name": "Scans",
-          "icon": "media/history.svg",
-          "contextualTitle": "Checkmarx Scans"
+          "id": "checkmarxLocal.realtime",
+          "name": "Realtime Results",
+          "icon": "media/checkmarx.svg",
+          "contextualTitle": "Checkmarx Realtime Results"
         }
       ]
     },
@@ -94,7 +101,7 @@
       },
       {
         "view": "checkmarxLocal.scans",
-        "contents": "No scans have been run in this workspace yet.\n[Scan project](command:checkmarxLocal.scanProject)\n[Scan current file](command:checkmarxLocal.scanCurrentFile)"
+        "contents": "No scans match the current filter.\n[Scan project](command:checkmarxLocal.scanProject)\n[Scan current file](command:checkmarxLocal.scanCurrentFile)\nUse the filter buttons in the view title to change scope or engine."
       }
     ],
     "commands": [
@@ -115,11 +122,13 @@
       },
       {
         "command": "checkmarxLocal.scanProjectCloud",
-        "title": "Checkmarx: Scan Project (Checkmarx One cloud)"
+        "title": "Checkmarx: Scan Project (Checkmarx One cloud)",
+        "icon": "$(cloud-upload)"
       },
       {
         "command": "checkmarxLocal.scanProjectLocal",
-        "title": "Checkmarx: Scan Project (local ASCA engine)"
+        "title": "Checkmarx: Scan Project (local ASCA engine)",
+        "icon": "$(device-desktop)"
       },
       {
         "command": "checkmarxLocal.scanCurrentFile",
@@ -142,11 +151,13 @@
       },
       {
         "command": "checkmarxLocal.scanCurrentFileCloud",
-        "title": "Checkmarx: Scan Current File (Cloud)"
+        "title": "Checkmarx: Scan Current File (Cloud)",
+        "icon": "$(cloud)"
       },
       {
         "command": "checkmarxLocal.scanCurrentFileLocal",
-        "title": "Checkmarx: Scan Current File (Local ASCA)"
+        "title": "Checkmarx: Scan Current File (Local ASCA)",
+        "icon": "$(file-code)"
       },
       {
         "command": "checkmarxLocal.scanFileCloud",
@@ -210,6 +221,20 @@
         "icon": "$(graph)"
       },
       {
+        "command": "checkmarxLocal.selectScan",
+        "title": "Checkmarx: Show Scan Results"
+      },
+      {
+        "command": "checkmarxLocal.filterScanScope",
+        "title": "Checkmarx: Filter Scans by Scope",
+        "icon": "$(folder)"
+      },
+      {
+        "command": "checkmarxLocal.filterScanEngine",
+        "title": "Checkmarx: Filter Scans by Engine",
+        "icon": "$(server)"
+      },
+      {
         "command": "checkmarxLocal.exportResults",
         "title": "Checkmarx: Export Results...",
         "icon": "$(export)"
@@ -249,46 +274,75 @@
         {
           "command": "checkmarxLocal.openFinding",
           "when": "false"
+        },
+        {
+          "command": "checkmarxLocal.selectScan",
+          "when": "false"
         }
       ],
       "view/title": [
         {
-          "command": "checkmarxLocal.scanProject",
+          "command": "checkmarxLocal.scanProjectCloud",
           "when": "view == checkmarxLocal.results",
           "group": "navigation@1"
         },
         {
-          "command": "checkmarxLocal.scanCurrentFile",
+          "command": "checkmarxLocal.scanProjectLocal",
           "when": "view == checkmarxLocal.results",
           "group": "navigation@2"
         },
         {
-          "command": "checkmarxLocal.toggleRealtime",
+          "command": "checkmarxLocal.scanCurrentFileCloud",
           "when": "view == checkmarxLocal.results",
           "group": "navigation@3"
         },
         {
-          "command": "checkmarxLocal.cancelScan",
-          "when": "view == checkmarxLocal.results && checkmarxLocal.scanning",
+          "command": "checkmarxLocal.scanCurrentFileLocal",
+          "when": "view == checkmarxLocal.results",
           "group": "navigation@4"
         },
         {
-          "command": "checkmarxLocal.refreshResults",
+          "command": "checkmarxLocal.toggleRealtime",
           "when": "view == checkmarxLocal.results",
           "group": "navigation@5"
         },
         {
-          "command": "checkmarxLocal.clearResults",
-          "when": "view == checkmarxLocal.results",
+          "command": "checkmarxLocal.cancelScan",
+          "when": "view == checkmarxLocal.results && checkmarxLocal.scanning",
           "group": "navigation@6"
         },
         {
           "command": "checkmarxLocal.refreshResults",
+          "when": "view == checkmarxLocal.results",
+          "group": "navigation@7"
+        },
+        {
+          "command": "checkmarxLocal.clearResults",
+          "when": "view == checkmarxLocal.results",
+          "group": "navigation@8"
+        },
+        {
+          "command": "checkmarxLocal.filterScanScope",
           "when": "view == checkmarxLocal.scans",
           "group": "navigation@1"
+        },
+        {
+          "command": "checkmarxLocal.filterScanEngine",
+          "when": "view == checkmarxLocal.scans",
+          "group": "navigation@2"
+        },
+        {
+          "command": "checkmarxLocal.refreshResults",
+          "when": "view == checkmarxLocal.scans",
+          "group": "navigation@3"
         }
       ],
       "view/item/context": [
+        {
+          "command": "checkmarxLocal.showScanSummary",
+          "when": "view == checkmarxLocal.scans && viewItem == checkmarxScan",
+          "group": "inline@1"
+        },
         {
           "command": "checkmarxLocal.fixFindingWithAi",
           "when": "view == checkmarxLocal.results && viewItem == checkmarxFinding",
@@ -604,7 +658,7 @@
           "type": "string",
           "default": "",
           "order": 12,
-          "markdownDescription": "Checkmarx One application name associated with cloud project scans. Required by tenants that enforce application association (error `CODE: 225, Missing Associated Application`). Use an existing application name from **Checkmarx One \u2192 Applications**. The dashboard can also set this."
+          "markdownDescription": "Checkmarx One application name associated with cloud project scans. Required by tenants that enforce application association (error `CODE: 225, Missing Associated Application`). Use an existing application name from **Checkmarx One → Applications**. The dashboard can also set this."
         }
       }
     }

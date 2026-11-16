@@ -6,7 +6,9 @@ import type { LoggerLike } from '../logging';
 import { relativeToRoot } from '../paths';
 import type {
   CliInfo,
+  AuthConfig,
   Finding,
+  FindingSource,
   PersistedState,
   ResultsQuery,
   ResultsResponse,
@@ -20,9 +22,11 @@ import type {
   ScanRecord
 } from '../types';
 import { countBySeverity, emptyCounts } from '../severity';
-import { createEmptySources, filterFindings, mergeSources, type ResultSources } from '../findings/merge';
+import { createEmptySources, filterFindings, mergeSources, sortFindings, type ResultSources } from '../findings/merge';
 import { buildPersistedState, deserializeSources } from '../findings/persist';
-import { getCodeContext } from '../findings/enrich';
+import { getCodeContext, enrichFindingsWithCode } from '../findings/enrich';
+import { normalizeCloudResults } from '../findings/normalizeCloud';
+import { asRecord, asString } from '../findings/util';
 import { collectProjectFiles, detectGitBranch } from './projectFiles';
 import { runCloudScan, isAbortError } from './cloudScanner';
 import { LocalScanner } from './localScanner';
@@ -41,6 +45,14 @@ export interface ScanUiState {
   counts: ReturnType<typeof emptyCounts>;
   total: number;
   history: ScanSummary[];
+}
+
+export interface CloudRefreshResult {
+  scanId: string;
+  cloudScanId: string;
+  findings: number;
+  /** True when a scan found on the server replaced the previous results. */
+  adopted: boolean;
 }
 
 export interface CliProviderLike {
@@ -78,6 +90,7 @@ export class ScanService {
   private cliInfo?: CliInfo;
   private cliVersion?: string;
   private realtimeEnabled = false;
+  private selectedScanId?: string;
   private saveTimer?: NodeJS.Timeout;
   private saveChain: Promise<void> = Promise.resolve();
   private disposed = false;
@@ -123,7 +136,8 @@ export class ScanService {
   }
 
   getState(): Promise<ScanState> {
-    const merged = this.getMerged();
+    const findings = this.getFindings();
+    const realtime = this.getRealtimeFindings();
     return Promise.resolve({
       active: this.active,
       latest: this.latest,
@@ -132,9 +146,12 @@ export class ScanService {
       cliPath: this.cliInfo?.path,
       cliVersion: this.cliVersion,
       realtimeEnabled: this.realtimeEnabled,
-      findings: merged,
-      counts: this.mergedCounts,
-      total: merged.length,
+      findings,
+      counts: countBySeverity(findings),
+      total: findings.length,
+      realtimeFindings: realtime,
+      realtimeCounts: countBySeverity(realtime),
+      realtimeTotal: realtime.length,
       history: [...this.history]
     });
   }
@@ -156,7 +173,101 @@ export class ScanService {
   }
 
   getFindings(): Finding[] {
+    const scan = this.effectiveScan();
+    if (!scan) {
+      return [];
+    }
+    // Results show exactly one scan. File-level and real-time findings are not
+    // merged in; real-time scans have their own view.
+    if (this.sources.project?.scanId === scan.id) {
+      return this.sources.project.findings;
+    }
+    return this.records.get(scan.id)?.findings ?? [];
+  }
+
+  /** Findings produced by real-time scans, for the dedicated real-time view. */
+  getRealtimeFindings(): Finding[] {
+    return sortFindings([...this.sources.realtime.values()].flatMap((entry) => entry.findings));
+  }
+
+  /** Findings shown in Problems: always the latest results, not a historical scan. */
+  getDiagnosticFindings(): Finding[] {
     return this.getMerged();
+  }
+
+  getSelectedScanId(): string | undefined {
+    return this.selectedScanId;
+  }
+
+  /**
+   * Shows the results of one scan in the Results view. Older cloud scans are
+   * re-downloaded on demand; local scans only exist while the scan is still in
+   * memory.
+   */
+  async selectScan(scanId: string): Promise<void> {
+    const scan = this.findSummary(scanId);
+    if (!scan) {
+      return;
+    }
+    if (!(await this.ensureScanFindings(scan))) {
+      throw new Error(
+        'Results for this local scan are no longer available. Run the scan again to inspect its findings.'
+      );
+    }
+    this.selectedScanId = scanId;
+    this.emitFindingsAndState();
+  }
+
+  private effectiveScan(): ScanSummary | undefined {
+    if (this.selectedScanId) {
+      const selected = this.findSummary(this.selectedScanId);
+      if (selected) {
+        return selected;
+      }
+      this.selectedScanId = undefined;
+    }
+    const projectScanId = this.sources.project?.scanId;
+    if (projectScanId) {
+      const projectScan = this.findSummary(projectScanId);
+      if (projectScan) {
+        return projectScan;
+      }
+    }
+    return this.history.find((scan) => scan.mode === 'project') ?? (this.latest?.mode === 'project' ? this.latest : undefined);
+  }
+
+  private findSummary(scanId: string): ScanSummary | undefined {
+    return (
+      this.records.get(scanId)?.summary ??
+      this.history.find((scan) => scan.id === scanId) ??
+      (this.latest?.id === scanId ? this.latest : undefined)
+    );
+  }
+
+  private async ensureScanFindings(scan: ScanSummary): Promise<boolean> {
+    if (this.records.has(scan.id) || this.sources.project?.scanId === scan.id) {
+      return true;
+    }
+    if (scan.engine !== 'cloud' || !scan.cloudScanId) {
+      return false;
+    }
+    const auth = await this.requireAuth();
+    const cli = await this.cli();
+    const resultsFile = await cli.fetchCloudResults(
+      scan.cloudScanId,
+      auth,
+      path.join(this.deps.storageRoot, 'cloud', scan.id)
+    );
+    const findings = await enrichFindingsWithCode(
+      normalizeCloudResults(resultsFile.payload, {
+        root: this.deps.root,
+        scanId: scan.id,
+        mode: scan.mode,
+        engine: 'cloud'
+      })
+    );
+    this.records.set(scan.id, { summary: scan, findings });
+    return true;
   }
 
   isCliAvailable(): boolean {
@@ -321,24 +432,265 @@ export class ScanService {
   async clearResults(): Promise<void> {
     this.sources = createEmptySources();
     this.latest = undefined;
+    this.selectedScanId = undefined;
     this.records.clear();
     this.invalidateMerged();
     this.emitFindingsAndState();
     this.scheduleSave();
   }
 
-  getResults(query: ResultsQuery = {}): ResultsResponse {
-    const source = query.scanId ? this.records.get(query.scanId)?.findings : undefined;
-    const base = source ?? this.getMerged();
-    const filtered = filterFindings(base, { query: { ...query, scanId: query.scanId && !source ? query.scanId : undefined } });
-    const counts = countBySeverity(filtered);
+  /**
+   * Pulls the newest results for this workspace from Checkmarx One.
+   *
+   * It first looks the project up on the server and adopts its latest completed
+   * scan, so scans started from the web UI or CI show up too. If that lookup is
+   * unavailable (not signed in, project not created yet), it falls back to
+   * re-downloading the cloud scan that currently backs the Results view.
+   *
+   * Returns undefined when there is nothing cloud-backed to refresh.
+   */
+  async refreshCloudResults(): Promise<CloudRefreshResult | undefined> {
+    if (this.active) {
+      // The running scan already owns the result pipeline; refreshing now would
+      // race with its own download.
+      this.deps.logger.debug('Skipping cloud result refresh while a scan is running');
+      return undefined;
+    }
+
+    const auth = await this.deps.auth.get();
+    let discoveryError: unknown;
+    // Do not replace a purely local result set with a cloud scan the user did
+    // not ask for; discovery only applies when the current results are cloud
+    // backed or when there is nothing on screen yet.
+    const discoveryAllowed = !this.sources.project || this.cloudRefreshTarget() !== undefined;
+    if (discoveryAllowed && auth?.apiKey && auth.baseUri) {
+      try {
+        const cli = await this.cli();
+        const discovered = await this.discoverLatestCloudScan(cli, auth);
+        if (discovered) {
+          const adopted = !this.findSummaryByCloudScanId(discovered.cloudScanId);
+          return await this.downloadAndApplyCloudResults(discovered, cli, auth, adopted);
+        }
+      } catch (error) {
+        discoveryError = error;
+        this.deps.logger.warn(
+          `Unable to look up the latest Checkmarx One scan: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
+
+    const target = this.cloudRefreshTarget();
+    if (!target?.cloudScanId) {
+      if (discoveryError) {
+        throw discoveryError;
+      }
+      return undefined;
+    }
+
+    const cli = await this.cli();
+    const knownAuth = await this.requireAuth();
+    return await this.downloadAndApplyCloudResults(target, cli, knownAuth, false);
+  }
+
+  private async downloadAndApplyCloudResults(
+    summary: ScanSummary,
+    cli: CxCli,
+    auth: AuthConfig,
+    adopted: boolean
+  ): Promise<CloudRefreshResult | undefined> {
+    const cloudScanId = summary.cloudScanId;
+    if (!cloudScanId) {
+      return undefined;
+    }
+
+    // Guard against a scan finishing (or being cleared) while we download.
+    const projectScanBefore = this.sources.project?.scanId;
+    const resultsFile = await cli.fetchCloudResults(
+      cloudScanId,
+      auth,
+      path.join(this.deps.storageRoot, 'cloud', summary.id)
+    );
+    const findings = await enrichFindingsWithCode(
+      normalizeCloudResults(resultsFile.payload, {
+        root: this.deps.root,
+        scanId: summary.id,
+        mode: summary.mode,
+        engine: 'cloud'
+      })
+    );
+    if (this.sources.project?.scanId !== projectScanBefore) {
+      return undefined;
+    }
+
+    if (summary.mode === 'project') {
+      this.sources.project = { scanId: summary.id, findings };
+    } else if (summary.file) {
+      this.sources.files.set(summary.file, {
+        scanId: summary.id,
+        engine: summary.engine,
+        scanTypes: summary.scanTypes,
+        findings
+      });
+    } else {
+      return undefined;
+    }
+
+    summary.counts = countBySeverity(findings);
+    summary.totalFindings = findings.length;
+    this.records.set(summary.id, { summary, findings });
+    if (adopted) {
+      this.history = this.history.filter((item) => item.cloudScanId !== cloudScanId);
+      this.latest = summary;
+      this.selectedScanId = undefined;
+      this.recordHistory(summary);
+      this.emitHistory();
+    } else if (this.latest?.id === summary.id) {
+      this.latest = summary;
+    }
+    this.invalidateMerged();
+    this.emitFindingsAndState();
+    this.scheduleSave();
+    return { scanId: summary.id, cloudScanId, findings: findings.length, adopted };
+  }
+
+  private async discoverLatestCloudScan(cli: CxCli, auth: AuthConfig): Promise<ScanSummary | undefined> {
+    const settings = this.deps.settings.load();
+    const projectName = settings.projectName || path.basename(this.deps.root);
+    const projectId = await this.findProjectId(cli, auth, projectName);
+    if (!projectId) {
+      return undefined;
+    }
+
+    const scans = await cli.listScans(projectId, auth);
+    const latest = scans
+      .map((item) => cloudScanView(item))
+      .filter((item): item is CloudScanView => item !== undefined)
+      .filter((item) => item.status === 'Completed' || item.status === 'Partial')
+      .sort((a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0))[0];
+    if (!latest) {
+      return undefined;
+    }
+
+    const known = this.findSummaryByCloudScanId(latest.id);
+    if (known) {
+      return known;
+    }
+
+    return {
+      id: `cloud-${latest.id}`,
+      mode: 'project',
+      engine: 'cloud',
+      status: 'completed',
+      startedAt: latest.createdAt || this.nowIso(),
+      finishedAt: latest.updatedAt,
+      projectName: latest.projectName || projectName,
+      branch: latest.branch,
+      scanTypes: latest.engines.length > 0 ? latest.engines : settings.scanTypes,
+      cloudScanId: latest.id,
+      counts: emptyCounts(),
+      totalFindings: 0
+    };
+  }
+
+  private async findProjectId(cli: CxCli, auth: AuthConfig, projectName: string): Promise<string | undefined> {
+    const pageSize = 100;
+    for (let page = 0; page < 20; page += 1) {
+      const projects = await cli.listProjects(auth, page * pageSize, pageSize);
+      for (const item of projects) {
+        const record = asRecord(item);
+        const id = asString(record?.ID) ?? asString(record?.id);
+        const name = asString(record?.Name) ?? asString(record?.name);
+        if (id && name === projectName) {
+          return id;
+        }
+      }
+      if (projects.length < pageSize) {
+        return undefined;
+      }
+    }
+    return undefined;
+  }
+
+  private findSummaryByCloudScanId(cloudScanId: string | undefined): ScanSummary | undefined {
+    if (!cloudScanId) {
+      return undefined;
+    }
+    const recorded = [...this.records.values()].find((record) => record.summary.cloudScanId === cloudScanId);
+    if (recorded) {
+      return recorded.summary;
+    }
+    return (
+      this.history.find((item) => item.cloudScanId === cloudScanId) ??
+      (this.latest?.cloudScanId === cloudScanId ? this.latest : undefined)
+    );
+  }
+
+  private cloudRefreshTarget(): ScanSummary | undefined {
+    const projectScanId = this.sources.project?.scanId;
+    if (projectScanId) {
+      const summary =
+        this.records.get(projectScanId)?.summary ??
+        this.history.find((item) => item.id === projectScanId) ??
+        (this.latest?.id === projectScanId ? this.latest : undefined);
+      return summary?.engine === 'cloud' && summary.cloudScanId ? summary : undefined;
+    }
+    if (this.latest?.engine === 'cloud' && this.latest.cloudScanId) {
+      return this.latest;
+    }
+    return this.history.find((item) => item.engine === 'cloud' && item.cloudScanId);
+  }
+
+  async getResults(query: ResultsQuery = {}): Promise<ResultsResponse> {
+    if (query.source === 'realtime') {
+      return await this.getRealtimeResults(query);
+    }
+    const scanId = query.scanId ?? this.effectiveScan()?.id;
+    const scan = scanId ? this.findSummary(scanId) : undefined;
+    if (query.scanId && !scan) {
+      throw new Error(`Scan "${query.scanId}" was not found in this workspace.`);
+    }
+    if (!scanId || !scan) {
+      return { source: 'scan', findings: [], total: 0, counts: emptyCounts() };
+    }
+
+    let base = this.findingsForScan(scanId);
+    if (!base) {
+      if (!(await this.ensureScanFindings(scan))) {
+        throw new Error(`Results for scan ${scanId} are no longer available. Re-run the scan to inspect its findings.`);
+      }
+      base = this.findingsForScan(scanId) ?? [];
+    }
+
+    const filtered = filterFindings(base, { query: { ...query, scanId: undefined, source: undefined } });
     const limited = query.limit !== undefined ? filtered.slice(0, query.limit) : filtered;
     return {
-      scan: query.scanId ? this.records.get(query.scanId)?.summary : undefined,
+      scan,
+      source: 'scan',
       findings: limited,
       total: filtered.length,
-      counts
+      counts: countBySeverity(filtered)
     };
+  }
+
+  async getRealtimeResults(query: ResultsQuery = {}): Promise<ResultsResponse> {
+    const filtered = filterFindings(this.getRealtimeFindings(), {
+      query: { ...query, scanId: undefined, source: undefined }
+    });
+    const limited = query.limit !== undefined ? filtered.slice(0, query.limit) : filtered;
+    return {
+      source: 'realtime',
+      findings: limited,
+      total: filtered.length,
+      counts: countBySeverity(filtered)
+    };
+  }
+
+  private findingsForScan(scanId: string): Finding[] | undefined {
+    const record = this.records.get(scanId);
+    if (record) {
+      return record.findings;
+    }
+    return this.sources.project?.scanId === scanId ? this.sources.project.findings : undefined;
   }
 
   async getFinding(key: string, includeCode = true): Promise<FindingDetails | undefined> {
@@ -363,14 +715,16 @@ export class ScanService {
     };
   }
 
-  getFileFindings(file: string): Finding[] {
+  getFileFindings(file: string, source: FindingSource = 'scan'): Finding[] {
     const absolute = path.isAbsolute(file) ? path.resolve(file) : path.resolve(this.deps.root, file);
-    return this.getMerged().filter((finding) => finding.file && path.resolve(finding.file) === absolute);
+    const base = source === 'realtime' ? this.getRealtimeFindings() : this.getFindings();
+    return base.filter((finding) => finding.file && path.resolve(finding.file) === absolute);
   }
 
-  getFiles(): FileSummary[] {
+  getFiles(source: FindingSource = 'scan'): FileSummary[] {
+    const base = source === 'realtime' ? this.getRealtimeFindings() : this.getFindings();
     const grouped = new Map<string, Finding[]>();
-    for (const finding of this.getMerged()) {
+    for (const finding of base) {
       if (!finding.file) {
         continue;
       }
@@ -543,7 +897,12 @@ export class ScanService {
   }
 
   private applyFileResult(summary: ScanSummary, file: string, findings: Finding[], mode: 'file' | 'realtime'): void {
-    const entry = { scanId: summary.id, findings };
+    const entry = {
+      scanId: summary.id,
+      engine: summary.engine,
+      scanTypes: summary.scanTypes,
+      findings
+    };
     if (mode === 'realtime') {
       this.sources.realtime.set(file, entry);
     } else {
@@ -561,6 +920,10 @@ export class ScanService {
     apply();
     summary.findingsBuffer = undefined;
     this.latest = summary;
+    if (summary.mode === 'project') {
+      // A fresh project scan becomes the default Results view.
+      this.selectedScanId = undefined;
+    }
     this.records.set(summary.id, { summary, findings });
     if (this.records.size > 15) {
       const oldest = [...this.records.keys()].slice(0, this.records.size - 15);
@@ -754,4 +1117,36 @@ function highestOf(counts: ReturnType<typeof emptyCounts>): Severity | undefined
 
 function redactError(message: string): string {
   return message.replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, '***');
+}
+
+interface CloudScanView {
+  id: string;
+  status: string;
+  createdAt: string;
+  updatedAt?: string;
+  projectName?: string;
+  branch?: string;
+  engines: string[];
+}
+
+/** Parses one entry of `cx scan list --format json`. */
+function cloudScanView(value: unknown): CloudScanView | undefined {
+  const record = asRecord(value);
+  const id = asString(record?.ID) ?? asString(record?.id);
+  if (!id) {
+    return undefined;
+  }
+  const rawEngines = record?.Engines ?? record?.engines;
+  const engines = Array.isArray(rawEngines)
+    ? rawEngines.filter((item): item is string => typeof item === 'string')
+    : [];
+  return {
+    id,
+    status: asString(record?.Status) ?? asString(record?.status) ?? '',
+    createdAt: asString(record?.CreatedAt) ?? asString(record?.createdAt) ?? '',
+    updatedAt: asString(record?.UpdatedAt) ?? asString(record?.updatedAt),
+    projectName: asString(record?.ProjectName) ?? asString(record?.projectName),
+    branch: asString(record?.Branch) ?? asString(record?.branch),
+    engines
+  };
 }

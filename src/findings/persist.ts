@@ -47,14 +47,26 @@ export function serializeSources(sources: ResultSources): PersistedSources {
     if (budget <= 0) {
       break;
     }
-    files.push({ file, scanId: entry.scanId, findings: take(entry.findings) });
+    files.push({
+      file,
+      scanId: entry.scanId,
+      engine: entry.engine,
+      scanTypes: entry.scanTypes,
+      findings: take(entry.findings)
+    });
   }
 
   for (const [file, entry] of sources.realtime) {
     if (budget <= 0) {
       break;
     }
-    realtime.push({ file, scanId: entry.scanId, findings: take(entry.findings) });
+    realtime.push({
+      file,
+      scanId: entry.scanId,
+      engine: entry.engine,
+      scanTypes: entry.scanTypes,
+      findings: take(entry.findings)
+    });
   }
 
   return { project, files, realtime };
@@ -76,10 +88,20 @@ export function deserializeSources(persisted: PersistedSources | undefined): Res
     };
   }
   for (const entry of persisted.files) {
-    sources.files.set(entry.file, { scanId: entry.scanId, findings: entry.findings });
+    sources.files.set(entry.file, {
+      scanId: entry.scanId,
+      engine: entry.engine,
+      scanTypes: entry.scanTypes,
+      findings: entry.findings
+    });
   }
   for (const entry of persisted.realtime) {
-    sources.realtime.set(entry.file, { scanId: entry.scanId, findings: entry.findings });
+    sources.realtime.set(entry.file, {
+      scanId: entry.scanId,
+      engine: entry.engine,
+      scanTypes: entry.scanTypes,
+      findings: entry.findings
+    });
   }
   return sources;
 }

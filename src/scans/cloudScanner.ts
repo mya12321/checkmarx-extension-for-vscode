@@ -5,6 +5,7 @@ import { normalizeCloudResults } from '../findings/normalizeCloud';
 import { enrichFindingsWithCode } from '../findings/enrich';
 import type { AuthConfig, Finding } from '../types';
 import type { CxCli } from '../cli/client';
+import { collectGitignoreExclusions } from './gitignore';
 
 export interface CloudScanOptions {
   root: string;
@@ -35,6 +36,22 @@ const SUCCESS_STATUSES = new Set(['completed', 'partial']);
 const FAILURE_STATUSES = new Set(['failed', 'canceled', 'cancelled', 'aborted', 'error']);
 
 export async function runCloudScan(cli: CxCli, options: CloudScanOptions): Promise<CloudScanResult> {
+  // Project uploads keep `.git` out and apply every `.gitignore` in the tree.
+  // The CLI's own `--use-gitignore` only understands the root file, so the
+  // exclusions are computed here and passed as Ant deny patterns instead.
+  const projectWide = options.mode === 'project';
+  const gitignore = projectWide
+    ? await collectGitignoreExclusions(options.root, { signal: options.signal })
+    : undefined;
+  if (gitignore?.patterns.length) {
+    options.logger.info(`Excluding ${gitignore.patterns.length} git-ignored path(s) from the cloud upload`);
+  }
+  if (gitignore?.truncated) {
+    options.logger.warn(
+      'Stopped collecting .gitignore exclusions after reaching the safety limit; some ignored files may still be uploaded.'
+    );
+  }
+
   const created = await cli.createCloudScan(
     {
       root: options.root,
@@ -43,6 +60,8 @@ export async function runCloudScan(cli: CxCli, options: CloudScanOptions): Promi
       branch: options.branch,
       scanTypes: options.scanTypes,
       fileFilter: options.fileFilter,
+      excludeGitFolder: projectWide,
+      fileFilterExt: gitignore?.patterns,
       auth: options.auth
     },
     {

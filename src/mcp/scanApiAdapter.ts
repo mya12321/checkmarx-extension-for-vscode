@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import type { SettingsLike } from '../config';
 import type { ScanService } from '../scans/scanService';
-import type { FileSummary, Finding, FindingDetails, ResultsQuery, ResultsResponse, ScanEngine, ScanState, ScanSummary } from '../types';
+import type { FileSummary, Finding, FindingDetails, FindingSource, ResultsQuery, ResultsResponse, ScanEngine, ScanState, ScanSummary } from '../types';
 import type { ScanApi } from './protocol';
 
 export class ScanApiAdapter implements ScanApi {
@@ -38,15 +38,17 @@ export class ScanApiAdapter implements ScanApi {
   }
 
   getResults(query: ResultsQuery): Promise<ResultsResponse> {
-    return Promise.resolve(this.service.getResults(query));
+    return query.source === 'realtime'
+      ? this.service.getRealtimeResults(query)
+      : this.service.getResults(query);
   }
 
   getFinding(key: string, includeCode: boolean): Promise<FindingDetails | undefined> {
     return this.service.getFinding(key, includeCode);
   }
 
-  getFileFindings(file: string): Finding[] {
-    return this.service.getFileFindings(file);
+  getFileFindings(file: string, source: FindingSource = 'scan'): Finding[] {
+    return this.service.getFileFindings(file, source);
   }
 
   listScans(limit: number): ScanSummary[] {
@@ -57,8 +59,8 @@ export class ScanApiAdapter implements ScanApi {
     return this.service.cancel(scanId);
   }
 
-  getFiles(): FileSummary[] {
-    return this.service.getFiles();
+  getFiles(source: FindingSource = 'scan'): FileSummary[] {
+    return this.service.getFiles(source);
   }
 
   private requireApplication(): void {

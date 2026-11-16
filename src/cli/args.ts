@@ -7,6 +7,14 @@ export interface CloudScanArgOptions {
   branch: string;
   scanTypes: string[];
   fileFilter?: string;
+  /** Strip every `.git` directory from the uploaded source zip. */
+  excludeGitFolder?: boolean;
+  /**
+   * Ant-style exclusions (`!path`) passed through `--file-filter-ext`. The
+   * extension computes these from every `.gitignore` in the tree, because the
+   * CLI's own `--use-gitignore` only reads the root file and matches basenames.
+   */
+  fileFilterExt?: string[];
   extraArgs?: string[];
 }
 
@@ -33,6 +41,14 @@ export function cloudScanCreateArgs(options: CloudScanArgOptions): string[] {
     '--scan-info-format',
     'json'
   ];
+
+  if (options.excludeGitFolder) {
+    args.push('--exclude-git-folder');
+  }
+
+  for (const pattern of options.fileFilterExt ?? []) {
+    args.push('--file-filter-ext', pattern);
+  }
 
   if (options.fileFilter) {
     args.push('--file-filter', normalizeSlashes(options.fileFilter));

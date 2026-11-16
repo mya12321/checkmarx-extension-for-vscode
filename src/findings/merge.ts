@@ -1,14 +1,23 @@
 import { compareSeverity, emptyCounts, meetsMinSeverity } from '../severity';
-import type { Finding, ResultsQuery, Severity } from '../types';
+import type { Finding, FindingType, ResultsQuery, ScanEngine, Severity } from '../types';
 import { isInsideRoot, normalizeSlashes } from '../paths';
+
+export interface FileOverride {
+  scanId: string;
+  findings: Finding[];
+  /** Engine that produced the override; used to scope what it may replace. */
+  engine?: ScanEngine;
+  /** Scan types the override covered, e.g. ["sast"]. */
+  scanTypes?: string[];
+}
 
 export interface ResultSources {
   project?: {
     scanId: string;
     findings: Finding[];
   };
-  files: Map<string, { scanId: string; findings: Finding[] }>;
-  realtime: Map<string, { scanId: string; findings: Finding[] }>;
+  files: Map<string, FileOverride>;
+  realtime: Map<string, FileOverride>;
 }
 
 export function createEmptySources(): ResultSources {
@@ -25,12 +34,49 @@ function sameFile(a: string | undefined, b: string | undefined): boolean {
   return normalizeSlashes(a).toLowerCase() === normalizeSlashes(b).toLowerCase();
 }
 
+const SCAN_TYPE_TO_FINDING_TYPE: Record<string, FindingType> = {
+  sast: 'sast',
+  asca: 'sast',
+  sca: 'sca',
+  'iac-security': 'iac',
+  iac: 'iac',
+  kics: 'iac',
+  secrets: 'secret',
+  'secret-detection': 'secret',
+  'secrets-detection': 'secret',
+  scs: 'secret',
+  'api-security': 'other',
+  'container-security': 'other',
+  containers: 'other',
+  dast: 'other'
+};
+
+function coveredFindingTypes(override: FileOverride): Set<FindingType> | undefined {
+  const fromScanTypes = new Set<FindingType>();
+  for (const scanType of override.scanTypes ?? []) {
+    const type = SCAN_TYPE_TO_FINDING_TYPE[scanType.trim().toLowerCase()];
+    if (type) {
+      fromScanTypes.add(type);
+    }
+  }
+  if (fromScanTypes.size > 0) {
+    return fromScanTypes;
+  }
+  // Older persisted entries have no scanTypes; infer them from their findings.
+  if (override.findings.length > 0) {
+    return new Set(override.findings.map((finding) => finding.type));
+  }
+  return undefined;
+}
+
 /**
  * Merge result sources with file-level overrides.
  *
- * Project results form the base. A single-file scan replaces every finding for
- * that file, and a real-time scan is the newest override. This makes "fix and
- * rescan" clear stale findings without wiping the rest of the project.
+ * Project results form the base. A single-file scan replaces the project
+ * findings for that file **that it could actually have detected**: only the
+ * same engine and only the scan types it ran. This keeps an ASCA rescan from
+ * erasing Checkmarx One findings, and a SAST-only rescan from erasing SCA or
+ * IaC findings for the same file.
  */
 export function mergeSources(sources: ResultSources): Finding[] {
   const byKey = new Map<string, Finding>();
@@ -39,16 +85,27 @@ export function mergeSources(sources: ResultSources): Finding[] {
     byKey.set(finding.key, finding);
   }
 
-  const overrides: Array<[string, { findings: Finding[] }]> = [
+  const overrides: Array<[string, FileOverride]> = [
     ...sources.files.entries(),
     ...sources.realtime.entries()
   ];
 
   for (const [file, override] of overrides) {
+    const engine = override.engine ?? override.findings[0]?.engine;
+    const types = coveredFindingTypes(override);
     for (const [key, finding] of byKey) {
-      if (sameFile(finding.file, file)) {
-        byKey.delete(key);
+      if (!sameFile(finding.file, file)) {
+        continue;
       }
+      // Unknown engine/scope (e.g. an override persisted by an older version
+      // with no findings): never delete project results we cannot compare to.
+      if (!engine || !types) {
+        continue;
+      }
+      if (finding.engine !== engine || !types.has(finding.type)) {
+        continue;
+      }
+      byKey.delete(key);
     }
     for (const finding of override.findings) {
       byKey.set(finding.key, finding);
