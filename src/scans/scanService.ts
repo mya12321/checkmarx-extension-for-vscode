@@ -55,11 +55,26 @@ export interface CloudRefreshResult {
   adopted: boolean;
 }
 
+export interface CloudScansRefreshResult {
+  /** Number of server scans newly added to the local history. */
+  added: number;
+  /** Number of scans returned by the server, across every branch. */
+  total: number;
+  /** Branches represented in the returned scans. */
+  branches: string[];
+}
+
 export interface CliProviderLike {
   resolve(force?: boolean): Promise<CliInfo>;
   version(info?: CliInfo): Promise<string | undefined>;
   invalidate(): void;
 }
+
+/**
+ * The scan-list API has no branch filter, so fetch enough history and filter
+ * locally; otherwise a busy project can fill the first page with other branches.
+ */
+const CLOUD_SCAN_LIST_LIMIT = 100;
 
 export interface ScanServiceDeps {
   root: string;
@@ -209,6 +224,9 @@ export class ScanService {
     if (!scan) {
       return;
     }
+    if (scan.status === 'queued' || scan.status === 'running') {
+      throw new Error('This scan is still running. Wait for it to finish before viewing its results.');
+    }
     if (!(await this.ensureScanFindings(scan))) {
       throw new Error(
         'Results for this local scan are no longer available. Run the scan again to inspect its findings.'
@@ -272,6 +290,11 @@ export class ScanService {
 
   isCliAvailable(): boolean {
     return Boolean(this.cliInfo);
+  }
+
+  /** True while a project or file scan owns the result pipeline. */
+  hasActiveScan(): boolean {
+    return Boolean(this.active);
   }
 
   async scanProject(engine?: ScanEngine, scanTypes?: string[]): Promise<ScanSummary> {
@@ -447,9 +470,13 @@ export class ScanService {
    * unavailable (not signed in, project not created yet), it falls back to
    * re-downloading the cloud scan that currently backs the Results view.
    *
+   * A download failure for a scan found on the server is surfaced instead of
+   * falling back to older results: silently showing a stale scan is worse than
+   * reporting that the download failed.
+   *
    * Returns undefined when there is nothing cloud-backed to refresh.
    */
-  async refreshCloudResults(): Promise<CloudRefreshResult | undefined> {
+  async refreshCloudResults(branch?: string): Promise<CloudRefreshResult | undefined> {
     if (this.active) {
       // The running scan already owns the result pipeline; refreshing now would
       // race with its own download.
@@ -459,24 +486,44 @@ export class ScanService {
 
     const auth = await this.deps.auth.get();
     let discoveryError: unknown;
+    let discovered: DiscoveredCloudScan | undefined;
+    let discoveryCli: CxCli | undefined;
     // Do not replace a purely local result set with a cloud scan the user did
     // not ask for; discovery only applies when the current results are cloud
     // backed or when there is nothing on screen yet.
     const discoveryAllowed = !this.sources.project || this.cloudRefreshTarget() !== undefined;
     if (discoveryAllowed && auth?.apiKey && auth.baseUri) {
       try {
-        const cli = await this.cli();
-        const discovered = await this.discoverLatestCloudScan(cli, auth);
-        if (discovered) {
-          const adopted = !this.findSummaryByCloudScanId(discovered.cloudScanId);
-          return await this.downloadAndApplyCloudResults(discovered, cli, auth, adopted);
-        }
+        discoveryCli = await this.cli();
+        discovered = await this.discoverLatestCloudScan(discoveryCli, auth, branch);
       } catch (error) {
         discoveryError = error;
         this.deps.logger.warn(
           `Unable to look up the latest Checkmarx One scan: ${error instanceof Error ? error.message : String(error)}`
         );
       }
+    }
+
+    if (discovered && discoveryCli && auth) {
+      const adopted = !this.findSummaryByCloudScanId(discovered.summary.cloudScanId);
+      return await this.downloadAndApplyCloudResults(
+        discovered.summary,
+        discoveryCli,
+        auth,
+        adopted,
+        discovered.serverStatus,
+        discovered.serverUpdatedAt
+      );
+    }
+
+    // With an explicit branch filter, do not fall back to the scan currently on
+    // screen: it may belong to a different branch and would silently ignore the
+    // filter.
+    if (branch?.trim()) {
+      if (discoveryError) {
+        throw discoveryError;
+      }
+      return undefined;
     }
 
     const target = this.cloudRefreshTarget();
@@ -496,7 +543,9 @@ export class ScanService {
     summary: ScanSummary,
     cli: CxCli,
     auth: AuthConfig,
-    adopted: boolean
+    adopted: boolean,
+    serverStatus?: string,
+    serverUpdatedAt?: string
   ): Promise<CloudRefreshResult | undefined> {
     const cloudScanId = summary.cloudScanId;
     if (!cloudScanId) {
@@ -543,17 +592,32 @@ export class ScanService {
       this.latest = summary;
       this.selectedScanId = undefined;
       this.recordHistory(summary);
-      this.emitHistory();
-    } else if (this.latest?.id === summary.id) {
-      this.latest = summary;
+    } else {
+      if (this.latest?.id === summary.id || !this.latest) {
+        this.latest = summary;
+      }
+      // The scan may already be recorded as failed (for example because its
+      // first result download timed out). Now that results downloaded, reflect
+      // the server status instead of leaving a stale "failed" entry.
+      if (serverStatus && isCompletedCloudStatus(serverStatus) && summary.status !== 'completed') {
+        summary.status = 'completed';
+        summary.error = undefined;
+        summary.finishedAt = serverUpdatedAt ?? this.nowIso();
+        this.recordHistory(summary);
+      }
     }
+    this.emitHistory();
     this.invalidateMerged();
     this.emitFindingsAndState();
     this.scheduleSave();
     return { scanId: summary.id, cloudScanId, findings: findings.length, adopted };
   }
 
-  private async discoverLatestCloudScan(cli: CxCli, auth: AuthConfig): Promise<ScanSummary | undefined> {
+  private async discoverLatestCloudScan(
+    cli: CxCli,
+    auth: AuthConfig,
+    branchOverride?: string
+  ): Promise<DiscoveredCloudScan | undefined> {
     const settings = this.deps.settings.load();
     const projectName = settings.projectName || path.basename(this.deps.root);
     const projectId = await this.findProjectId(cli, auth, projectName);
@@ -561,11 +625,13 @@ export class ScanService {
       return undefined;
     }
 
-    const scans = await cli.listScans(projectId, auth);
+    const branch = branchOverride?.trim() || (await this.resolveBranch(settings));
+    const scans = await cli.listScans(projectId, auth, undefined, CLOUD_SCAN_LIST_LIMIT);
     const latest = scans
       .map((item) => cloudScanView(item))
       .filter((item): item is CloudScanView => item !== undefined)
-      .filter((item) => item.status === 'Completed' || item.status === 'Partial')
+      .filter((item) => isCompletedCloudStatus(item.status))
+      .filter((item) => !branch || !item.branch || item.branch === branch)
       .sort((a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0))[0];
     if (!latest) {
       return undefined;
@@ -573,23 +639,127 @@ export class ScanService {
 
     const known = this.findSummaryByCloudScanId(latest.id);
     if (known) {
-      return known;
+      return { summary: known, serverStatus: latest.status, serverUpdatedAt: latest.updatedAt };
     }
 
     return {
-      id: `cloud-${latest.id}`,
+      summary: {
+        id: `cloud-${latest.id}`,
+        mode: 'project',
+        engine: 'cloud',
+        status: 'completed',
+        startedAt: latest.createdAt || this.nowIso(),
+        finishedAt: latest.updatedAt,
+        projectName: latest.projectName || projectName,
+        branch: latest.branch,
+        scanTypes: latest.engines.length > 0 ? latest.engines : settings.scanTypes,
+        cloudScanId: latest.id,
+        counts: emptyCounts(),
+        totalFindings: 0
+      },
+      serverStatus: latest.status,
+      serverUpdatedAt: latest.updatedAt
+    };
+  }
+
+  /**
+   * Loads the project's recent scans from Checkmarx One and merges them into
+   * the local scan history. This makes scans started from the web UI, CI, or
+   * another machine visible in the Scans view instead of showing only scans
+   * this workspace started.
+   */
+  async refreshCloudScans(): Promise<CloudScansRefreshResult> {
+    const auth = await this.requireAuth();
+    const settings = this.deps.settings.load();
+    const projectName = settings.projectName || path.basename(this.deps.root);
+    const cli = await this.cli();
+    const projectId = await this.findProjectId(cli, auth, projectName);
+    if (!projectId) {
+      throw new Error(
+        `Checkmarx One project "${projectName}" was not found. Check "checkmarxLocal.project.name".`
+      );
+    }
+
+    const scans = await cli.listScans(projectId, auth, undefined, CLOUD_SCAN_LIST_LIMIT);
+    const views = scans
+      .map((item) => cloudScanView(item))
+      .filter((item): item is CloudScanView => item !== undefined)
+      .sort((a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0));
+    const branches = [
+      ...new Set(views.map((view) => view.branch).filter((value): value is string => Boolean(value)))
+    ].sort();
+
+    const knownCloudScanIds = new Set(
+      this.history.map((scan) => scan.cloudScanId).filter((id): id is string => Boolean(id))
+    );
+    for (const view of views) {
+      const existing = this.findSummaryByCloudScanId(view.id);
+      if (existing) {
+        this.mergeServerScan(existing, view);
+        if (!this.history.some((scan) => scan.id === existing.id)) {
+          this.history.push(existing);
+        }
+      } else {
+        this.history.push(this.summaryFromCloudScan(view, projectName, settings.scanTypes));
+      }
+    }
+
+    this.history = [...this.history]
+      .sort((a, b) => (Date.parse(b.startedAt) || 0) - (Date.parse(a.startedAt) || 0))
+      .slice(0, 25);
+    const added = this.history.filter(
+      (scan) => scan.cloudScanId !== undefined && !knownCloudScanIds.has(scan.cloudScanId)
+    ).length;
+    this.emitHistory();
+    this.scheduleSave();
+    return { added, total: views.length, branches };
+  }
+
+  private mergeServerScan(summary: ScanSummary, view: CloudScanView): void {
+    const status = scanStatusFromServer(view.status);
+    if (summary.status !== status) {
+      summary.status = status;
+    }
+    if (status === 'completed' && summary.error) {
+      summary.error = undefined;
+    }
+    if (view.branch) {
+      summary.branch = view.branch;
+    }
+    if (view.projectName) {
+      summary.projectName = view.projectName;
+    }
+    if (view.updatedAt) {
+      summary.finishedAt = view.updatedAt;
+    }
+    if (view.engines.length > 0) {
+      summary.scanTypes = view.engines;
+    }
+  }
+
+  private summaryFromCloudScan(view: CloudScanView, projectName: string, defaultScanTypes: string[]): ScanSummary {
+    return {
+      id: `cloud-${view.id}`,
       mode: 'project',
       engine: 'cloud',
-      status: 'completed',
-      startedAt: latest.createdAt || this.nowIso(),
-      finishedAt: latest.updatedAt,
-      projectName: latest.projectName || projectName,
-      branch: latest.branch,
-      scanTypes: latest.engines.length > 0 ? latest.engines : settings.scanTypes,
-      cloudScanId: latest.id,
+      status: scanStatusFromServer(view.status),
+      startedAt: view.createdAt || this.nowIso(),
+      finishedAt: view.updatedAt,
+      projectName: view.projectName || projectName,
+      branch: view.branch,
+      scanTypes: view.engines.length > 0 ? view.engines : defaultScanTypes,
+      cloudScanId: view.id,
       counts: emptyCounts(),
       totalFindings: 0
     };
+  }
+
+  private async resolveBranch(settings: SettingsSnapshot): Promise<string | undefined> {
+    const configured = (settings.branch ?? '').trim();
+    if (configured) {
+      return configured;
+    }
+    return await detectGitBranch(this.deps.root);
   }
 
   private async findProjectId(cli: CxCli, auth: AuthConfig, projectName: string): Promise<string | undefined> {
@@ -963,7 +1133,14 @@ export class ScanService {
   }
 
   private recordHistory(summary: ScanSummary): void {
-    this.history = [summary, ...this.history.filter((item) => item.id !== summary.id)].slice(0, 25);
+    // A scan can be listed from the server while it is running and then be
+    // recorded again locally when it finishes; keep only one entry per run.
+    this.history = [
+      summary,
+      ...this.history.filter(
+        (item) => item.id !== summary.id && (!summary.cloudScanId || item.cloudScanId !== summary.cloudScanId)
+      )
+    ].slice(0, 25);
   }
 
   private completeSummary(summary: ScanSummary): void {
@@ -1119,6 +1296,12 @@ function redactError(message: string): string {
   return message.replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, '***');
 }
 
+interface DiscoveredCloudScan {
+  summary: ScanSummary;
+  serverStatus: string;
+  serverUpdatedAt?: string;
+}
+
 interface CloudScanView {
   id: string;
   status: string;
@@ -1127,6 +1310,25 @@ interface CloudScanView {
   projectName?: string;
   branch?: string;
   engines: string[];
+}
+
+function isCompletedCloudStatus(status: string): boolean {
+  const normalized = status.trim().toLowerCase();
+  return normalized === 'completed' || normalized === 'partial';
+}
+
+function scanStatusFromServer(status: string): ScanSummary['status'] {
+  const normalized = status.trim().toLowerCase();
+  if (normalized === 'completed' || normalized === 'partial') {
+    return 'completed';
+  }
+  if (normalized === 'failed' || normalized === 'error') {
+    return 'failed';
+  }
+  if (normalized === 'canceled' || normalized === 'cancelled' || normalized === 'aborted') {
+    return 'cancelled';
+  }
+  return 'running';
 }
 
 /** Parses one entry of `cx scan list --format json`. */

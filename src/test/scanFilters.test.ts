@@ -27,8 +27,8 @@ const scans = [
   scan({ id: 'local-file', mode: 'file', engine: 'local' })
 ];
 
-test('scan filters default to cloud project scans, newest first', () => {
-  assert.deepEqual(DEFAULT_SCAN_FILTERS, { scope: 'project', engine: 'cloud' });
+test('scan filters default to cloud project scans across every branch, newest first', () => {
+  assert.deepEqual(DEFAULT_SCAN_FILTERS, { scope: 'project', engine: 'cloud', branch: '' });
   assert.deepEqual(
     applyScanFilters(scans, DEFAULT_SCAN_FILTERS).map((item) => item.id),
     ['cloud-new', 'cloud-old']
@@ -37,15 +37,36 @@ test('scan filters default to cloud project scans, newest first', () => {
 
 test('scan filters combine scope and engine', () => {
   assert.deepEqual(
-    applyScanFilters(scans, { scope: 'file', engine: 'local' }).map((item) => item.id),
+    applyScanFilters(scans, { scope: 'file', engine: 'local', branch: '' }).map((item) => item.id),
     ['local-file']
   );
   assert.deepEqual(
-    applyScanFilters(scans, { scope: 'project', engine: 'local' }).map((item) => item.id),
+    applyScanFilters(scans, { scope: 'project', engine: 'local', branch: '' }).map((item) => item.id),
     ['local-project']
   );
   assert.deepEqual(
-    applyScanFilters(scans, { scope: 'file', engine: 'cloud' }).map((item) => item.id),
+    applyScanFilters(scans, { scope: 'file', engine: 'cloud', branch: '' }).map((item) => item.id),
     ['cloud-file']
+  );
+});
+
+test('scan filters narrow the list to one branch', () => {
+  const branchScans = [
+    scan({ id: 'uat-new', branch: 'uat', startedAt: '2026-01-02T00:00:00.000Z' }),
+    scan({ id: 'uat-old', branch: 'uat', startedAt: '2026-01-01T00:00:00.000Z' }),
+    scan({ id: 'main', branch: 'main', startedAt: '2026-01-03T00:00:00.000Z' }),
+    scan({ id: 'no-branch' })
+  ];
+  assert.deepEqual(
+    applyScanFilters(branchScans, { scope: 'project', engine: 'cloud', branch: 'uat' }).map((item) => item.id),
+    ['uat-new', 'uat-old']
+  );
+  assert.deepEqual(
+    applyScanFilters(branchScans, { scope: 'project', engine: 'cloud', branch: 'main' }).map((item) => item.id),
+    ['main']
+  );
+  assert.deepEqual(
+    applyScanFilters(branchScans, { scope: 'project', engine: 'cloud', branch: '' }).map((item) => item.id),
+    ['main', 'uat-new', 'uat-old', 'no-branch']
   );
 });

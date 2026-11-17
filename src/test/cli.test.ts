@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { cloudResultsArgs, cloudScanCreateArgs, ascaScanArgs } from '../cli/args';
-import type { CxCli, CloudScanRequest } from '../cli/client';
+import { CxCli, type CloudScanRequest } from '../cli/client';
+import type { CliRunner, RunResult } from '../cli/runner';
 import { extractJson } from '../json';
 import { noopLogger } from '../logging';
 import { runCloudScan, type CloudScanOptions } from '../scans/cloudScanner';
@@ -97,6 +98,37 @@ test('cloud results arguments write a JSON report outside the workspace', () => 
     '--output-name',
     'results-scan-id'
   ]);
+});
+
+test('CLI runs use a longer default network timeout for large result downloads', () => {
+  const previous = process.env.CX_TIMEOUT;
+  delete process.env.CX_TIMEOUT;
+  try {
+    const cli = new CxCli('/fake/cx', {} as CliRunner, noopLogger);
+    assert.equal(cli.buildEnv(undefined).CX_TIMEOUT, '120');
+    process.env.CX_TIMEOUT = '45';
+    assert.equal(cli.buildEnv(undefined).CX_TIMEOUT, '45');
+  } finally {
+    if (previous === undefined) {
+      delete process.env.CX_TIMEOUT;
+    } else {
+      process.env.CX_TIMEOUT = previous;
+    }
+  }
+});
+
+test('scan list can fetch enough history to filter by branch', async () => {
+  let captured: string[] = [];
+  const runner = {
+    run: async (_command: string, args: string[]): Promise<RunResult> => {
+      captured = args;
+      return { code: 0, signal: null, stdout: '[]', stderr: '', timedOut: false, aborted: false, durationMs: 1 };
+    }
+  } as unknown as CliRunner;
+  const cli = new CxCli('/fake/cx', runner, noopLogger);
+  await cli.listScans('project-1', { apiKey: 'key', baseUri: 'https://ast.example', tenant: 'tenant' }, undefined, 100);
+  assert.ok(captured.includes('project-id=project-1'));
+  assert.ok(captured.includes('limit=100'));
 });
 
 test('extracts JSON from mixed CLI output and BOM-prefixed files', () => {

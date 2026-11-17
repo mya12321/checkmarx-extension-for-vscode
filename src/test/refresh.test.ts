@@ -51,8 +51,23 @@ function persisted(latest?: ScanSummary): PersistedState {
   };
 }
 
-function makeService(root: string, storageRoot: string, state: PersistedState, runner: CliRunner, auth?: AuthStoreLike): ScanService {
-  const settings = { load: () => ({ cliExtraArgs: [], realtimeEnabled: false }) } as unknown as SettingsLike;
+function makeService(
+  root: string,
+  storageRoot: string,
+  state: PersistedState,
+  runner: CliRunner,
+  auth?: AuthStoreLike,
+  settingsPatch: { branch?: string; projectName?: string } = {}
+): ScanService {
+  const settings = {
+    load: () => ({
+      cliExtraArgs: [],
+      realtimeEnabled: false,
+      branch: settingsPatch.branch ?? '',
+      projectName: settingsPatch.projectName ?? '',
+      scanTypes: ['sast']
+    })
+  } as unknown as SettingsLike;
   const cliProvider: CliProviderLike = {
     resolve: async () => ({ path: '/fake/cx', source: 'setting', version: '2.3.71' }),
     version: async () => '2.3.71',
@@ -109,6 +124,29 @@ function serverRunner(calls: string[][], data: ServerData = {}): CliRunner {
 
 function resultsCalls(calls: string[][]): string[][] {
   return calls.filter((args) => args[0] === 'results');
+}
+
+function failingResultsRunner(calls: string[][], data: ServerData): CliRunner {
+  return {
+    run: async (_command: string, args: string[]): Promise<RunResult> => {
+      calls.push(args);
+      if (args[0] === 'project' && args[1] === 'list') {
+        return ok(JSON.stringify(data.projects ?? []));
+      }
+      if (args[0] === 'scan' && args[1] === 'list') {
+        return ok(JSON.stringify(data.scans ?? []));
+      }
+      return {
+        code: 1,
+        signal: null,
+        stdout: '',
+        stderr: 'Failed listing results: context deadline exceeded',
+        timedOut: false,
+        aborted: false,
+        durationMs: 1
+      };
+    }
+  } as unknown as CliRunner;
 }
 
 test('refresh re-downloads the cloud scan backing the current workspace', async () => {
@@ -182,6 +220,219 @@ test('refresh adopts the latest completed scan found on the server', async () =>
     const listCall = calls.find((args) => args[0] === 'scan' && args[1] === 'list');
     assert.ok(listCall);
     assert.ok(listCall!.includes('project-id=project-1'));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(storage, { recursive: true, force: true });
+  }
+});
+
+test('refresh surfaces a result download failure instead of falling back to an older scan', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'cx-refresh-'));
+  const storage = await mkdtemp(join(tmpdir(), 'cx-refresh-store-'));
+  const calls: string[][] = [];
+  const projectName = basename(root);
+  const failed = summary({ id: 'scan-old', cloudScanId: 'cloud-old', status: 'failed', error: 'old failure' });
+  const service = makeService(
+    root,
+    storage,
+    persisted(failed),
+    failingResultsRunner(calls, {
+      projects: [{ ID: 'project-1', Name: projectName }],
+      scans: [
+        {
+          ID: 'cloud-new',
+          Status: 'Completed',
+          CreatedAt: '2026-01-03T00:00:00Z',
+          ProjectName: projectName,
+          Branch: '',
+          Engines: ['sast']
+        }
+      ]
+    })
+  );
+  try {
+    await service.initialize();
+    await assert.rejects(service.refreshCloudResults(), /context deadline exceeded/);
+    const downloads = resultsCalls(calls);
+    assert.equal(downloads.length, 1);
+    assert.equal(downloads[0]![downloads[0]!.indexOf('--scan-id') + 1], 'cloud-new');
+    assert.equal(service.getFindings().length, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(storage, { recursive: true, force: true });
+  }
+});
+
+test('refresh marks a previously failed scan as completed after downloading its results', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'cx-refresh-'));
+  const storage = await mkdtemp(join(tmpdir(), 'cx-refresh-store-'));
+  const calls: string[][] = [];
+  const projectName = basename(root);
+  const failed = summary({ id: 'scan-1', cloudScanId: 'cloud-1', status: 'failed', error: 'download timeout' });
+  const service = makeService(
+    root,
+    storage,
+    persisted(failed),
+    serverRunner(calls, {
+      projects: [{ ID: 'project-1', Name: projectName }],
+      scans: [
+        {
+          ID: 'cloud-1',
+          Status: 'Completed',
+          CreatedAt: '2026-01-01T00:00:00Z',
+          UpdatedAt: '2026-01-01T01:00:00Z',
+          ProjectName: projectName,
+          Branch: '',
+          Engines: ['sast']
+        }
+      ]
+    })
+  );
+  try {
+    await service.initialize();
+    const result = await service.refreshCloudResults();
+    assert.ok(result);
+    assert.equal(result.adopted, false);
+    assert.equal(result.findings, 4);
+    const scan = service.getScan('scan-1');
+    assert.equal(scan?.status, 'completed');
+    assert.equal(scan?.error, undefined);
+    assert.equal(scan?.totalFindings, 4);
+    assert.equal(service.getFindings().length, 4);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(storage, { recursive: true, force: true });
+  }
+});
+
+test('refreshCloudScans lists server scans across branches and deduplicates them', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'cx-refresh-'));
+  const storage = await mkdtemp(join(tmpdir(), 'cx-refresh-store-'));
+  const calls: string[][] = [];
+  const projectName = basename(root);
+  const service = makeService(
+    root,
+    storage,
+    persisted(),
+    serverRunner(calls, {
+      projects: [{ ID: 'project-1', Name: projectName }],
+      scans: [
+        {
+          ID: 'c-main-new',
+          Status: 'Completed',
+          CreatedAt: '2026-01-03T00:00:00Z',
+          Branch: 'main',
+          Engines: ['sast']
+        },
+        {
+          ID: 'c-main-old',
+          Status: 'Failed',
+          CreatedAt: '2026-01-02T00:00:00Z',
+          Branch: 'main',
+          Engines: ['sast']
+        },
+        {
+          ID: 'c-dev',
+          Status: 'Completed',
+          CreatedAt: '2026-01-04T00:00:00Z',
+          Branch: 'dev',
+          Engines: ['sast']
+        }
+      ]
+    })
+  );
+  try {
+    await service.initialize();
+    const first = await service.refreshCloudScans();
+    assert.deepEqual(first, { added: 3, total: 3, branches: ['dev', 'main'] });
+    assert.deepEqual(
+      service.listScans().map((scan) => scan.id),
+      ['cloud-c-dev', 'cloud-c-main-new', 'cloud-c-main-old']
+    );
+    assert.equal(service.listScans()[2]?.status, 'failed');
+
+    const second = await service.refreshCloudScans();
+    assert.equal(second.added, 0);
+    assert.equal(service.listScans().length, 3);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(storage, { recursive: true, force: true });
+  }
+});
+
+test('refreshCloudScans updates an existing failed entry with the server status', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'cx-refresh-'));
+  const storage = await mkdtemp(join(tmpdir(), 'cx-refresh-store-'));
+  const calls: string[][] = [];
+  const projectName = basename(root);
+  const failed = summary({ id: 'scan-1', cloudScanId: 'cloud-1', status: 'failed', error: 'download timeout' });
+  const service = makeService(
+    root,
+    storage,
+    persisted(failed),
+    serverRunner(calls, {
+      projects: [{ ID: 'project-1', Name: projectName }],
+      scans: [
+        {
+          ID: 'cloud-1',
+          Status: 'Completed',
+          CreatedAt: '2026-01-01T00:00:00Z',
+          Branch: 'main',
+          Engines: ['sast']
+        }
+      ]
+    }),
+    undefined
+  );
+  try {
+    await service.initialize();
+    const result = await service.refreshCloudScans();
+    assert.equal(result.added, 0);
+    assert.equal(service.getScan('scan-1')?.status, 'completed');
+    assert.equal(service.getScan('scan-1')?.error, undefined);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(storage, { recursive: true, force: true });
+  }
+});
+
+test('refresh can target a branch selected in the Scans view', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'cx-refresh-'));
+  const storage = await mkdtemp(join(tmpdir(), 'cx-refresh-store-'));
+  const calls: string[][] = [];
+  const projectName = basename(root);
+  const service = makeService(
+    root,
+    storage,
+    persisted(),
+    serverRunner(calls, {
+      projects: [{ ID: 'project-1', Name: projectName }],
+      scans: [
+        {
+          ID: 'cloud-main',
+          Status: 'Completed',
+          CreatedAt: '2026-01-05T00:00:00Z',
+          Branch: 'main',
+          Engines: ['sast']
+        },
+        {
+          ID: 'cloud-dev',
+          Status: 'Completed',
+          CreatedAt: '2026-01-04T00:00:00Z',
+          Branch: 'dev',
+          Engines: ['sast']
+        }
+      ]
+    })
+  );
+  try {
+    await service.initialize();
+    const result = await service.refreshCloudResults('dev');
+    assert.ok(result);
+    assert.equal(result.cloudScanId, 'cloud-dev');
+
+    const missing = await service.refreshCloudResults('release');
+    assert.equal(missing, undefined);
   } finally {
     await rm(root, { recursive: true, force: true });
     await rm(storage, { recursive: true, force: true });

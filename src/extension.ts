@@ -13,8 +13,9 @@ import { Logger } from './logger';
 import { ScanApiAdapter } from './mcp/scanApiAdapter';
 import { McpBridge } from './mcp/bridge';
 import { RealtimeController } from './scans/realtime';
-import { ScanService } from './scans/scanService';
+import { ScanService, type CloudScansRefreshResult } from './scans/scanService';
 import { DEFAULT_SCAN_FILTERS, type ScanListFilters } from './scans/scanFilters';
+import { detectGitBranch } from './scans/projectFiles';
 import { FileStateStore } from './scans/stateStore';
 import { formatCounts } from './severity';
 import type { AuthConfig, CliInfo, Finding, ScanEngine, ScanSummary } from './types';
@@ -44,6 +45,10 @@ const COMMANDS = [
   'checkmarxLocal.cancelScan',
   'checkmarxLocal.clearResults',
   'checkmarxLocal.refreshResults',
+  'checkmarxLocal.refreshScans',
+  'checkmarxLocal.filterScanScope',
+  'checkmarxLocal.filterScanEngine',
+  'checkmarxLocal.filterScanBranch',
   'checkmarxLocal.showResults',
   'checkmarxLocal.openFinding',
   'checkmarxLocal.openLocation',
@@ -111,7 +116,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     engine:
       context.workspaceState.get<string>('checkmarxLocal.scanFilterEngine', DEFAULT_SCAN_FILTERS.engine) === 'local'
         ? 'local'
-        : 'cloud'
+        : 'cloud',
+    branch: (
+      context.workspaceState.get<string>('checkmarxLocal.scanFilterBranch', DEFAULT_SCAN_FILTERS.branch) ?? ''
+    ).trim()
   };
 
   const resultsProvider = new ResultsTreeProvider(
@@ -862,6 +870,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }
 
   async function refreshResults(): Promise<void> {
+    if (scanService.hasActiveScan()) {
+      void vscode.window.showInformationMessage(
+        'Checkmarx: a scan is still running. Wait for it to finish before refreshing results.'
+      );
+      return;
+    }
+
     resultsProvider.refresh();
     scansProvider.refresh();
     const snapshot = settings.load();
@@ -874,7 +889,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           location: vscode.ProgressLocation.Notification,
           title: 'Checkmarx: fetching latest results from Checkmarx One…'
         },
-        () => scanService.refreshCloudResults()
+        () => scanService.refreshCloudResults(scanFilters.branch || undefined)
       );
     } catch (error) {
       void vscode.window.showErrorMessage(
@@ -884,6 +899,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
 
     if (!pulled) {
+      const branch = scanFilters.branch ? ` for branch ${scanFilters.branch}` : '';
+      void vscode.window.showInformationMessage(
+        `Checkmarx: no cloud results to refresh${branch}. Run a cloud scan, or check the project name and sign-in settings.`
+      );
       return;
     }
 
@@ -896,6 +915,40 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         ? `Checkmarx: loaded the latest cloud scan ${pulled.cloudScanId} (${pulled.findings} finding(s)).`
         : `Checkmarx: refreshed ${pulled.findings} finding(s) from scan ${pulled.cloudScanId}.`
     );
+  }
+
+  async function refreshScans(): Promise<void> {
+    scansProvider.refresh();
+    let loaded: CloudScansRefreshResult;
+    try {
+      loaded = await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: 'Checkmarx: loading scans from Checkmarx One…'
+        },
+        () => scanService.refreshCloudScans()
+      );
+    } catch (error) {
+      void vscode.window.showErrorMessage(
+        `Checkmarx: could not load scans: ${error instanceof Error ? error.message : String(error)}`
+      );
+      return;
+    }
+
+    scansProvider.refresh();
+    const branchCount = loaded.branches.length;
+    const scope = branchCount > 0 ? ` across ${branchCount} branch${branchCount === 1 ? '' : 'es'}` : '';
+    if (loaded.total === 0) {
+      void vscode.window.showInformationMessage('Checkmarx: no scans found.');
+    } else if (loaded.added > 0) {
+      void vscode.window.showInformationMessage(
+        `Checkmarx: found ${loaded.total} scan(s)${scope}; ${loaded.added} added to the list.`
+      );
+    } else {
+      void vscode.window.showInformationMessage(
+        `Checkmarx: found ${loaded.total} scan(s)${scope}; the list is already up to date.`
+      );
+    }
   }
 
   async function showResults(): Promise<void> {
@@ -1045,7 +1098,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   function updateScansViewMessage(): void {
     const scope = scanFilters.scope === 'project' ? 'Project scans' : 'Single-file scans';
     const engine = scanFilters.engine === 'cloud' ? 'Checkmarx One' : 'ASCA local';
-    scansView.message = `${scope} · ${engine}`;
+    const branch = scanFilters.branch ? ` · ${scanFilters.branch}` : ' · all branches';
+    scansView.message = `${scope} · ${engine}${branch}`;
   }
 
   async function filterScanScope(): Promise<void> {
@@ -1084,6 +1138,53 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     scanFilters.engine = choice.value;
     await context.workspaceState.update('checkmarxLocal.scanFilterEngine', choice.value);
+    scansProvider.refresh();
+    updateScansViewMessage();
+  }
+
+  async function filterScanBranch(): Promise<void> {
+    const counts = new Map<string, number>();
+    for (const scan of scanService.listScans(25)) {
+      if (scan.branch) {
+        counts.set(scan.branch, (counts.get(scan.branch) ?? 0) + 1);
+      }
+    }
+    const current = (settings.load().branch || (root ? await detectGitBranch(root) : undefined) || '').trim();
+    if (current && !counts.has(current)) {
+      counts.set(current, 0);
+    }
+    if (scanFilters.branch && !counts.has(scanFilters.branch)) {
+      counts.set(scanFilters.branch, 0);
+    }
+    const branches = [...counts.entries()].sort((a, b) => {
+      if (a[0] === current) {
+        return -1;
+      }
+      if (b[0] === current) {
+        return 1;
+      }
+      return a[0].localeCompare(b[0]);
+    });
+    const choice = await vscode.window.showQuickPick(
+      [
+        { label: 'All branches', description: 'Show scans from every branch', value: '' },
+        ...branches.map(([branch, count]) => ({
+          label: branch,
+          description:
+            count > 0 ? `${count} scan${count === 1 ? '' : 's'}` : branch === current ? 'current branch' : 'no scans loaded',
+          value: branch
+        }))
+      ],
+      {
+        title: 'Checkmarx: filter scans by branch',
+        placeHolder: `Currently: ${scanFilters.branch || 'all branches'}`
+      }
+    );
+    if (!choice) {
+      return;
+    }
+    scanFilters.branch = choice.value;
+    await context.workspaceState.update('checkmarxLocal.scanFilterBranch', choice.value);
     scansProvider.refresh();
     updateScansViewMessage();
   }
@@ -1245,8 +1346,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   register('checkmarxLocal.cancelScan', () => cancelScan());
   register('checkmarxLocal.clearResults', () => clearResults());
   register('checkmarxLocal.refreshResults', () => refreshResults());
+  register('checkmarxLocal.refreshScans', () => refreshScans());
   register('checkmarxLocal.filterScanScope', () => filterScanScope());
   register('checkmarxLocal.filterScanEngine', () => filterScanEngine());
+  register('checkmarxLocal.filterScanBranch', () => filterScanBranch());
   register('checkmarxLocal.showResults', () => showResults());
   register('checkmarxLocal.openFinding', (arg) => {
     const key = keyFromArg(arg);

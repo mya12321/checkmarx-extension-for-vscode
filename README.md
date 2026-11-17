@@ -30,7 +30,7 @@ Click the **Checkmarx** icon in the Activity Bar. The **Dashboard** view opens f
 - Severity summary, latest scan, **Open results**, and **Clear**.
 - CLI status with **Install / update** and **Select path**, plus MCP status and **Restart MCP**.
 
-Below the dashboard, **Scans** lists scans newest first and can be filtered by scope (all project scans or single-file scans) and by engine (Checkmarx One cloud or local ASCA); the default is cloud project scans. Filtering is remembered per workspace, and the active filter is shown above the list. **Results** shows exactly one scan — the latest project scan by default, or whichever scan you click — with no file or real-time results merged in. **Realtime Results** is a separate view for real-time scan findings. The graph button on a scan opens its summary without leaving the list.
+Below the dashboard, **Scans** lists scans newest first and can be filtered by scope (all project scans or single-file scans), engine (Checkmarx One cloud or local ASCA), and branch (all branches or one branch); the default is cloud project scans across all branches. Filtering is remembered per workspace, and the active filters are shown above the list. The branch filter also scopes **Refresh Results**. **Results** shows exactly one scan — the latest project scan by default, or whichever scan you click — with no file or real-time results merged in. **Realtime Results** is a separate view for real-time scan findings. The graph button on a scan opens its summary without leaving the list.
 
 ## Requirements
 
@@ -180,6 +180,8 @@ The bridge only listens on `127.0.0.1`, requires the token for every request, an
 | `Checkmarx: Toggle Real-time Scan` | Enable/disable scans while editing. |
 | `Checkmarx: Cancel Scan` | Abort the active scan. |
 | `Checkmarx: Clear Results` | Remove current findings (history summaries remain). |
+| `Checkmarx: Refresh Results` | Pull the latest cloud scan results and adopt the newest completed scan. |
+| `Checkmarx: Refresh Scans` | Load the project's recent scans from Checkmarx One into the Scans view. |
 | `Checkmarx: Fix Finding with AI` | Build a fix prompt and open chat. |
 | `Checkmarx: Fix File Findings with AI` | Fix all findings in one file. |
 | `Checkmarx: Copy AI Fix Prompt` | Copy the prompt without opening chat. |

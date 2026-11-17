@@ -2,7 +2,7 @@
   "name": "checkmarx-local",
   "displayName": "Checkmarx Local Scan & MCP",
   "description": "Run Checkmarx CLI scans from VS Code with an API key, including local ASCA scans, real-time scanning, an Activity Bar dashboard, and an MCP server so AI agents can read results and fix code.",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "publisher": "checkmarx-local",
   "license": "MIT",
   "repository": {
@@ -188,6 +188,11 @@
         "icon": "$(refresh)"
       },
       {
+        "command": "checkmarxLocal.refreshScans",
+        "title": "Checkmarx: Refresh Scans",
+        "icon": "$(refresh)"
+      },
+      {
         "command": "checkmarxLocal.showResults",
         "title": "Checkmarx: Show Results"
       },
@@ -233,6 +238,11 @@
         "command": "checkmarxLocal.filterScanEngine",
         "title": "Checkmarx: Filter Scans by Engine",
         "icon": "$(server)"
+      },
+      {
+        "command": "checkmarxLocal.filterScanBranch",
+        "title": "Checkmarx: Filter Scans by Branch",
+        "icon": "$(git-branch)"
       },
       {
         "command": "checkmarxLocal.exportResults",
@@ -332,9 +342,14 @@
           "group": "navigation@2"
         },
         {
-          "command": "checkmarxLocal.refreshResults",
+          "command": "checkmarxLocal.filterScanBranch",
           "when": "view == checkmarxLocal.scans",
           "group": "navigation@3"
+        },
+        {
+          "command": "checkmarxLocal.refreshScans",
+          "when": "view == checkmarxLocal.scans",
+          "group": "navigation@4"
         }
       ],
       "view/item/context": [
@@ -418,7 +433,7 @@
           },
           "default": [],
           "order": 5,
-          "markdownDescription": "Extra global arguments appended to every CLI invocation, for example `--insecure` or `--timeout 60`."
+          "markdownDescription": "Extra global arguments appended to every CLI invocation. Add one array item per argument, for example `--insecure`, or `--timeout` followed by `180`."
         },
         "checkmarxLocal.cliAutoInstall": {
           "type": "boolean",

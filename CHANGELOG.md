@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.5
+
+- **Refresh Scans** now loads the project's recent scans from Checkmarx One across all branches, so scans started from the web UI or CI appear in the Scans view without opening Results first.
+- **Scans** adds a branch filter next to the scope and engine filters; it is remembered per workspace and also scopes **Refresh Results** to that branch.
+- Cloud CLI calls now use a 120-second network timeout instead of the CLI's 30-second default, fixing `cx results show` failures with `context deadline exceeded ... while reading body` on large or slow-to-download scans.
+- Refresh Results no longer silently falls back to an older scan when the newest scan's results fail to download; the real error is reported instead.
+- A scan previously recorded as failed only because its result download timed out is marked completed after a successful refresh, and its status is refreshed from the server when the scan list is reloaded.
+- Clicking a running scan now explains that its results are not available yet, and refresh commands report when a scan is running or there is nothing cloud-backed to refresh.
+
 ## 0.1.4
 
 - **Scans** lists cloud and local runs newest first, with scope (project / single file) and engine (cloud / local) filters that default to cloud project scans and are remembered per workspace. Clicking a scan shows its findings in **Results** (the latest scan is shown by default); an inline graph button opens the scan summary instead of opening it on click.

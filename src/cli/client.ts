@@ -41,6 +41,14 @@ const AUTH_ENV_KEYS = [
   'CX_CLIENT_SECRET'
 ];
 
+/**
+ * The CLI defaults its per-request network timeout to 30 seconds in 2.3.x.
+ * `cx results show` fetches the complete result list in pages, and a slow page
+ * (large scans over a high-latency link) otherwise fails with
+ * "context deadline exceeded ... while reading body".
+ */
+const DEFAULT_CLIENT_TIMEOUT_SECONDS = '120';
+
 export class CxCli {
   constructor(
     private readonly cliPath: string,
@@ -161,9 +169,9 @@ export class CxCli {
     return Array.isArray(payload) ? payload : [];
   }
 
-  async listScans(projectId: string, auth: AuthConfig, signal?: AbortSignal): Promise<unknown[]> {
+  async listScans(projectId: string, auth: AuthConfig, signal?: AbortSignal, limit = 20): Promise<unknown[]> {
     const result = await this.run(
-      ['scan', 'list', '--format', 'json', '--filter', `project-id=${projectId}`, '--filter', 'limit=20'],
+      ['scan', 'list', '--format', 'json', '--filter', `project-id=${projectId}`, '--filter', `limit=${limit}`],
       { signal, timeoutMs: 60_000, env: this.buildEnv(auth) }
     );
     if (result.code !== 0) {
@@ -223,6 +231,11 @@ export class CxCli {
     const env: NodeJS.ProcessEnv = { ...process.env };
     for (const key of AUTH_ENV_KEYS) {
       delete env[key];
+    }
+    // Keep an explicit override from the environment, but never leave the CLI
+    // on its short default when downloading a large result set.
+    if (!env.CX_TIMEOUT?.trim()) {
+      env.CX_TIMEOUT = DEFAULT_CLIENT_TIMEOUT_SECONDS;
     }
 
     if (auth) {
