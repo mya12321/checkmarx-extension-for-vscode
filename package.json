@@ -1,9 +1,9 @@
 {
-  "name": "checkmarx-local",
+  "name": "checkmarx-extension",
   "displayName": "Checkmarx Local Scan & MCP",
   "description": "Run Checkmarx CLI scans from VS Code with an API key, including local ASCA scans, real-time scanning, an Activity Bar dashboard, and an MCP server so AI agents can read results and fix code.",
   "version": "0.1.5",
-  "publisher": "checkmarx-local",
+  "publisher": "andymiao",
   "license": "MIT",
   "repository": {
     "type": "git",
